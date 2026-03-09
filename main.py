@@ -26,8 +26,10 @@ topic_sub_pump  = b'heatp/pump'
 topic_pub       = b'heatp/pico120'
 topic_pins      = b'heatp/pins'
 
-FIRMWARE_VERSION = "v2.10-status-map-fix" # Version aktualisiert
+FIRMWARE_VERSION = "v2.31-mqtt-watchdog"
+MQTT_TIMEOUT_S = 30  # Reset wenn kein Publish seit 30s
 start_time = time.time()
+last_publish_time = time.time()
 
 # ==================== GLOBALE VARIABLEN ====================
 current_pwm = PWM_MAX
@@ -175,6 +177,8 @@ def publish_all_pins(t):
 
         status = f"PWM:{current_pwm},IP:{ip},MEM:{mem_pct}%,PIN7:{pin7_state},PIN5:{pin5_state},PUMP:{pump_state},Duty:{pump_duty_cycle_pct}%,Status:{pump_status_text}"
         client.publish(topic_pub, status.encode())
+        global last_publish_time
+        last_publish_time = time.time()
 
     except Exception as e:
         mqtt_log(f"publish_all_pins error: {e}")
@@ -334,6 +338,10 @@ while True:
     try:
         if client:
             client.check_msg()
+        # Kein Publish seit MQTT_TIMEOUT_S → WDT absichtlich verhungern lassen
+        if time.time() - last_publish_time > MQTT_TIMEOUT_S:
+            mqtt_log("MQTT Timeout → WDT Reset")
+            while True: pass
         feed_watchdog()
     except Exception as e:
         mqtt_log(f"Error: {e}")
