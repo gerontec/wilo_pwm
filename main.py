@@ -26,7 +26,7 @@ topic_sub_pump  = b'heatp/pump'
 topic_pub       = b'heatp/pico120'
 topic_pins      = b'heatp/pins'
 
-FIRMWARE_VERSION = "v2.37-gc-threshold"
+FIRMWARE_VERSION = "v2.38-max-on-no-signal"
 MQTT_TIMEOUT_S = 30  # Reset wenn kein Publish seit 30s
 start_time = time.time()
 last_publish_time = time.time()
@@ -108,10 +108,8 @@ def read_adc_voltage(adc):
 def _is_feedback_error(feedback_data):
     duty = feedback_data["PumpDuty"]
     status = feedback_data["PumpStatus"]
-    if "TIMEOUT" in status or "NO PULSE" in status:
-        return False  # kein Signal = kein Fehler (Pumpe läuft noch nicht / Sensor fehlt)
     if duty < 9.0:
-        return True
+        return True  # TIMEOUT/NO PULSE (duty=0) → ebenfalls MAX PWM
     for kw in ("Damaged", "Failure", "Abnormal", "Error Timeout"):
         if kw in status:
             return True
