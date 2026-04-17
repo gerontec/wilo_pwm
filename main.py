@@ -26,7 +26,7 @@ topic_sub_pump  = b'heatp/pump'
 topic_pub       = b'heatp/pico120'
 topic_pins      = b'heatp/pins'
 
-FIRMWARE_VERSION = "v2.38-max-on-no-signal"
+FIRMWARE_VERSION = "v2.39-version-fix"
 MQTT_TIMEOUT_S = 30  # Reset wenn kein Publish seit 30s
 start_time = time.time()
 last_publish_time = time.time()
@@ -141,7 +141,7 @@ def publish_all_pins(t):
             mem_pct = get_mem_percent()
         uptime = int(time.time() - start_time)
 
-        mp_version = f"{os.uname().sysname} v{os.uname().version.split()[0]}"
+        mp_version = f"{os.uname().sysname} v{os.uname().release}"
         build_date = os.uname().version.split(';')[1].strip() if ';' in os.uname().version else "unknown"
         machine = os.uname().machine
 
