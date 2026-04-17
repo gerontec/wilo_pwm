@@ -16,7 +16,7 @@ PWM_MIN_HARD = 0       # absolutes Hardware-Minimum (unveränderlich)
 PWM_MAX = 64000
 RAMP_DURATION = 240.0  # Sekunden für sanfte Rampe (4 Minuten)
 
-TARGET_PWM = 32000
+TARGET_PWM = 33000
 INTERVAL_SECONDS = 900 # 15 Minuten
 BOOST_DURATION = 5 # 5 Sekunden
 
@@ -26,7 +26,7 @@ topic_sub_pump  = b'heatp/pump'
 topic_pub       = b'heatp/pico120'
 topic_pins      = b'heatp/pins'
 
-FIRMWARE_VERSION = "v2.33-min-pwm-feedback"
+FIRMWARE_VERSION = "v2.37-gc-threshold"
 MQTT_TIMEOUT_S = 30  # Reset wenn kein Publish seit 30s
 start_time = time.time()
 last_publish_time = time.time()
@@ -86,7 +86,6 @@ def mqtt_log(msg):
             client.publish(b'heatp/log', payload.encode())
     except:
         pass
-    feed_watchdog()
 
 def get_mem_percent():
     try:
@@ -107,10 +106,10 @@ def read_adc_voltage(adc):
 # ----------------------------------------------------------------------
 
 def _is_feedback_error(feedback_data):
-    """True wenn Feedback-Status auf Fehler hinweist oder sich dem Fehlerbereich annähert."""
     duty = feedback_data["PumpDuty"]
     status = feedback_data["PumpStatus"]
-    # duty > 75% verlässt den Normalbereich (Normal: 5-75%) → Fehler/Annäherung
+    if "TIMEOUT" in status or "NO PULSE" in status:
+        return False  # kein Signal = kein Fehler (Pumpe läuft noch nicht / Sensor fehlt)
     if duty < 9.0:
         return True
     for kw in ("Damaged", "Failure", "Abnormal", "Error Timeout"):
@@ -139,6 +138,9 @@ def publish_all_pins(t):
         ip = sta.ifconfig()[0] if sta.isconnected() else "0.0.0.0"
         wlan_status = 1 if sta.isconnected() else 0
         mem_pct = get_mem_percent()
+        if mem_pct > 55:
+            gc.collect()
+            mem_pct = get_mem_percent()
         uptime = int(time.time() - start_time)
 
         mp_version = f"{os.uname().sysname} v{os.uname().version.split()[0]}"
@@ -203,10 +205,10 @@ def publish_all_pins(t):
         client.publish(topic_pub, status.encode())
         global last_publish_time
         last_publish_time = time.time()
+        feed_watchdog()  # nur nach erfolgreichem Publish
 
     except Exception as e:
         mqtt_log(f"publish_all_pins error: {e}")
-    feed_watchdog()
 
 # ----------------------------------------------------------------------
 ## ⏱️ Steuerung und MQTT-Logik
@@ -291,7 +293,7 @@ def sub_cb(topic, msg):
                 mqtt_log("Auto reaktiviert")
             elif cmd.isdigit():
                 val = int(cmd)
-                TARGET_PWM = max(0, val)
+                TARGET_PWM = max(PWM_MIN, val) if val > 0 else 0
                 target_pwm = TARGET_PWM
                 ramp_start_time = None
                 if target_pwm > 0:
