@@ -7,7 +7,8 @@ import sys
 import os
 import ujson
 import utime
-import pwmfeedback
+import pwmfeedback_core1 as pwmfeedback
+import pwmfb_core1
 
 # ==================== KONFIGURATION ====================
 WATCHDOG_ENABLED = True
@@ -26,18 +27,18 @@ topic_sub_pump  = b'heatp/pump'
 topic_pub       = b'heatp/pico120'
 topic_pins      = b'heatp/pins'
 
-FIRMWARE_VERSION = "v2.39-version-fix"
+FIRMWARE_VERSION = "v2.44-grace-period"
 MQTT_TIMEOUT_S = 30  # Reset wenn kein Publish seit 30s
 start_time = time.time()
 last_publish_time = time.time()
 
 # ==================== GLOBALE VARIABLEN ====================
 PWM_MIN = 33000        # per MQTT setzbares Minimum (min:VALUE)
-current_pwm = PWM_MAX
-target_pwm = PWM_MAX
+current_pwm = PWM_MAX   # Hardware startet auf MAX (Sicherheit)
+target_pwm = TARGET_PWM  # Ziel: sofort rampen auf Normalbetrieb
 ramp_start_time = None
 ramp_start_value = None
-last_boost_start = 0
+last_boost_start = None  # wird beim ersten publish_all_pins gesetzt
 boost_active = False
 timers = []
 client = None
@@ -121,8 +122,9 @@ def publish_all_pins(t):
     # --- PUMPEN FEEDBACK aus Modul ---
     feedback_data = pwmfeedback.get_pump_feedback(feedback_pin5.value())
 
-    # --- FEEDBACK-NOTFALL: Fehler bei laufender Pumpe → sofort auf MAX ---
-    if target_pwm > 0 and _is_feedback_error(feedback_data):
+    # --- FEEDBACK-NOTFALL: erst nach 60s Startup-Grace-Period aktiv ---
+    uptime = int(time.time() - start_time)
+    if target_pwm > 0 and uptime > 60 and _is_feedback_error(feedback_data):
         target_pwm = PWM_MAX
         current_pwm = PWM_MAX
         ramp_start_time = None
@@ -169,6 +171,11 @@ def publish_all_pins(t):
 
             "PIN19": pump_feedback_pin19.value(),
             "PumpFeedback": pump_feedback_pin19.value(),
+
+            # C-Natmod Health
+            "C1_edges": pwmfb_core1.get_health()[1],
+            "C1_drops": pwmfb_core1.get_health()[2],
+            "C1_poll":  pwmfb_core1.get_health()[0],
 
             # ADC PINS
             "PIN26": read_adc_voltage(adc26),
@@ -239,6 +246,8 @@ def update_pwm_ramp(t):
 def boost_cycle(t):
     global target_pwm, TARGET_PWM, ramp_start_time, last_boost_start, boost_active, current_pwm
     now = time.time()
+    if last_boost_start is None:
+        last_boost_start = now  # Startzeitpunkt initialisieren — verhindert Sofort-Boost
     if not boost_active and now - last_boost_start >= INTERVAL_SECONDS:
         # BOOST START
         mqtt_log("15-Min-Boost: 5s auf 100%")
