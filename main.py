@@ -27,7 +27,7 @@ topic_sub_pump  = b'heatp/pump'
 topic_pub       = b'heatp/pico120'
 topic_pins      = b'heatp/pins'
 
-FIRMWARE_VERSION = "v2.46-wdt-subcb-fix"
+FIRMWARE_VERSION = "v2.47-wdt-mainloop-only"
 MQTT_TIMEOUT_S = 30  # Reset wenn kein Publish seit 30s
 start_time = time.time()
 last_publish_time = time.time()
@@ -172,11 +172,11 @@ def publish_all_pins(t):
             "PIN19": pump_feedback_pin19.value(),
             "PumpFeedback": pump_feedback_pin19.value(),
 
-            # C-Natmod Health
+            # C-Core1 Health
+            "C1_poll":    pwmfb_core1.get_health()[0],
             "C1_edges":   pwmfb_core1.get_health()[1],
             "C1_drops":   pwmfb_core1.get_health()[2],
-            "C1_poll":    pwmfb_core1.get_health()[0],
-            "C1_deb_us":  pwmfb_core1.get_health()[4],
+            "C1_deb_us":  pwmfb_core1.get_health()[4] if len(pwmfb_core1.get_health()) > 4 else 0,
 
             # ADC PINS
             "PIN26": read_adc_voltage(adc26),
@@ -211,7 +211,8 @@ def publish_all_pins(t):
         client.publish(topic_pub, status.encode())
         global last_publish_time
         last_publish_time = time.time()
-        feed_watchdog()  # nur nach erfolgreichem Publish
+        # WDT wird NUR im Main-Loop gefüttert (Zeile ~382)
+        # Hier KEIN feed_watchdog() — Timer-IRQ darf WDT nicht füttern
 
     except Exception as e:
         mqtt_log(f"publish_all_pins error: {e}")
@@ -356,9 +357,15 @@ def add_timer(period, callback):
 
 client = mqtt_connect()
 LED.on()
-# Warten auf WLAN
+# Warten auf WLAN (max 7s, dann WDT-Reset)
+wlan_wait = 0
 while not sta.isconnected():
-    feed_watchdog()
+    utime.sleep_ms(100)
+    wlan_wait += 1
+    if wlan_wait % 20 == 0:  # alle 2s WDT füttern solange noch kein WLAN
+        feed_watchdog()
+    if wlan_wait >= 70:      # nach 7s aufhören → WDT resetet in <1s
+        break
 
 ip = sta.ifconfig()[0]
 mqtt_log(f"Start – IP: {ip} | FW: {FIRMWARE_VERSION}")

@@ -33,8 +33,8 @@ def init_feedback_pin():
     return Pin(5, Pin.IN, Pin.PULL_UP)  # Pin-Objekt für .value() Kompatibilität
 
 def get_health():
-    poll, edges, drops, ready = pwmfb_core1.get_health()
-    return (edges, drops)  # kompatibel mit natmod: (irq_count, irq_errors)
+    h = pwmfb_core1.get_health()
+    return (h[1], h[2])  # (edge_count, debounce_drop) — kompatibel mit natmod API
 
 def get_pump_feedback(pin_value):
     global _in_error, _error_start_ms
