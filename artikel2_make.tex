@@ -229,10 +229,19 @@ per MQTT als \texttt{C1\_deb\_us} publiziert:
 75\,Hz    & 13\,333\,us & 666\,us \\
 1\,kHz    & 1\,000\,us  & 50\,us \\
 10\,kHz   & 100\,us     & 5\,us \\
-500\,kHz  & 2\,us       & 2\,us (Minimum) \\
+250\,kHz  & 4\,us       & 2\,us (Minimum erreicht) \\
 \bottomrule
 \end{tabular}
 \end{center}
+
+\textbf{Praktische Obergrenze: 250\,kHz.}
+Das Debounce-Minimum von 2\,us bedeutet, dass jede Halbperiode
+mindestens 2\,us lang sein muss --- also Periode $\geq$ 4\,us,
+Frequenz $\leq$ 250\,kHz.
+Die Poll-Rate von 26\,Mio/s (1 Poll $\approx$ 38\,ns) waere theoretisch
+bis $\sim$6\,MHz ausreichend, ist hier aber nicht der limitierende Faktor.
+Wer hoeher will, setzt \texttt{DEBOUNCE\_US\_MIN = 0} ---
+dann wird MicroPython instabiler --- oder wechselt zu PIO.
 
 % -----------------------------------------------------------------------
 \section{Health-Check: Ist Core 1 noch am Leben?}
@@ -318,7 +327,7 @@ neu deployen.
 \midrule
 Python IRQ (pure)   & $\sim$1--2\,kHz  & kein Build \\
 C-Natmod (.mpy)     & $\sim$10\,kHz    & kein Build, portabel \\
-Core 1 via Thread   & $\sim$500\,kHz   & Custom Firmware noetig \\
+Core 1 via Thread   & $\sim$250\,kHz   & Debounce-Minimum 2\,us \\
 PIO (Assembler)     & $\sim$62\,MHz    & Custom Firmware + ASM \\
 \bottomrule
 \end{tabular}
