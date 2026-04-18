@@ -27,7 +27,7 @@ topic_sub_pump  = b'heatp/pump'
 topic_pub       = b'heatp/pico120'
 topic_pins      = b'heatp/pins'
 
-FIRMWARE_VERSION = "v2.45-adaptive-debounce"
+FIRMWARE_VERSION = "v2.46-wdt-subcb-fix"
 MQTT_TIMEOUT_S = 30  # Reset wenn kein Publish seit 30s
 start_time = time.time()
 last_publish_time = time.time()
@@ -325,7 +325,6 @@ def sub_cb(topic, msg):
                 mqtt_log(f"Unbekannt: {cmd}")
 
             publish_all_pins(None)
-        feed_watchdog()
     except Exception as e:
         mqtt_log(f"sub_cb error: {e}")
 
