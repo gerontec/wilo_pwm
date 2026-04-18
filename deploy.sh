@@ -41,6 +41,8 @@ for f in "${FILES[@]}"; do
 done
 
 if [ $NO_RESET -eq 0 ]; then
+    echo "=== Warte auf MQTT-Verbindung des Pico ==="
+    timeout 20 mosquitto_sub -h $MQTT_HOST -t heatp/log -C 1 --quiet | grep -q "Start" || true
     echo "=== Reset via MQTT ==="
     mosquitto_pub -h $MQTT_HOST -t $MQTT_RESET_TOPIC -m "reset"
     echo "  Reset gesendet, warte 13s..."

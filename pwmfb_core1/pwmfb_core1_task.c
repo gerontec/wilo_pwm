@@ -42,11 +42,11 @@ void *pwmfb_core1_task(void *arg) {
                         g_pwmfb.debounce_us = new_deb;
                         deb = new_deb;
                     }
+                    last_t   = now;
+                    last_lvl = lvl;
                 } else {
                     g_pwmfb.debounce_drop++;
                 }
-                last_t   = now;
-                last_lvl = lvl;
             }
         }
         sleep_us(1);

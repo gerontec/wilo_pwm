@@ -27,7 +27,7 @@ topic_sub_pump  = b'heatp/pump'
 topic_pub       = b'heatp/pico120'
 topic_pins      = b'heatp/pins'
 
-FIRMWARE_VERSION = "v2.48-c1poll-delta"
+FIRMWARE_VERSION = "v2.49-debfix-hysterese"
 MQTT_TIMEOUT_S = 30  # Reset wenn kein Publish seit 30s
 start_time = time.time()
 last_publish_time = time.time()
@@ -42,7 +42,8 @@ last_boost_start = None  # wird beim ersten publish_all_pins gesetzt
 boost_active = False
 timers = []
 client = None
-_c1_poll_last = 0  # für Überlauf-sicheres Delta
+_c1_poll_last = 0       # für Überlauf-sicheres Delta
+_feedback_err_count = 0 # Hysterese: Emergency erst nach 3 Fehlmessungen
 
 # ==================== HARDWARE & PIN-DEFINITIONEN ====================
 pwm0 = PWM(Pin(0), freq=800)
@@ -118,20 +119,25 @@ def _is_feedback_error(feedback_data):
     return False
 
 def publish_all_pins(t):
-    global target_pwm, current_pwm, ramp_start_time, boost_active, _c1_poll_last
+    global target_pwm, current_pwm, ramp_start_time, boost_active, _c1_poll_last, _feedback_err_count
 
     # --- PUMPEN FEEDBACK aus Modul ---
     feedback_data = pwmfeedback.get_pump_feedback(feedback_pin5.value())
 
-    # --- FEEDBACK-NOTFALL: erst nach 60s Startup-Grace-Period aktiv ---
+    # --- FEEDBACK-NOTFALL: erst nach 60s Startup-Grace-Period, 3× bestätigt ---
     uptime = int(time.time() - start_time)
     if target_pwm > 0 and uptime > 60 and _is_feedback_error(feedback_data):
-        target_pwm = PWM_MAX
-        current_pwm = PWM_MAX
-        ramp_start_time = None
-        pwm0.duty_u16(PWM_MAX)
-        boost_active = False
-        mqtt_log(f"NOTFALL: Feedback-Fehler ({feedback_data['PumpStatus']}) → MAX PWM")
+        _feedback_err_count += 1
+        if _feedback_err_count >= 3:
+            target_pwm = PWM_MAX
+            current_pwm = PWM_MAX
+            ramp_start_time = None
+            pwm0.duty_u16(PWM_MAX)
+            boost_active = False
+            _feedback_err_count = 0
+            mqtt_log(f"NOTFALL: Feedback-Fehler ({feedback_data['PumpStatus']}) → MAX PWM")
+    else:
+        _feedback_err_count = 0
 
     # --- ENDE PWM BERECHNUNG ---
 
