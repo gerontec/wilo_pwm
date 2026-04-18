@@ -11,7 +11,7 @@ _TIMEOUT_US = 50000
 
 # State-Buffer (20 Bytes, heap-allokiert, 4-Byte-aligned)
 # Layout: [pin_num, last_state, pad, pad, high_us(4), low_us(4), last_upd(4), last_chg(4)]
-_state = bytearray(20)
+_state = bytearray(28)
 _state[0] = _PIN  # pin_num
 
 _STATUS_MAP = [
@@ -36,6 +36,9 @@ def _get_status(duty):
         if duty >= threshold:
             return text
     return "UNKNOWN STATUS"
+
+def get_health():
+    return _pwmfeedback.get_health(_state)  # (irq_count, irq_errors)
 
 def init_feedback_pin():
     pin = Pin(_PIN, Pin.IN, Pin.PULL_UP)

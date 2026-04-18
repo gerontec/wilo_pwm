@@ -10,8 +10,10 @@
 //   Byte  4:   high_us    (uint32_t)
 //   Byte  8:   low_us     (uint32_t)
 //   Byte 12:   last_upd   (uint32_t)
-//   Byte 16:   last_change(uint32_t)
-//   Gesamt: 20 Bytes
+//   Byte 16:   last_chg   (uint32_t)
+//   Byte 20:   irq_count  (uint32_t) -- jeder IRQ-Aufruf
+//   Byte 24:   irq_errors (uint32_t) -- Debounce-Verwuerfe
+//   Gesamt: 28 Bytes
 
 #include "py/dynruntime.h"
 
@@ -31,9 +33,11 @@ typedef struct {
     uint32_t low_us;
     uint32_t last_upd;
     uint32_t last_chg;
+    uint32_t irq_count;   // jeder IRQ-Aufruf
+    uint32_t irq_errors;  // Debounce-Verwuerfe (diff < 100us oder kein Pegelwechsel)
 } pwmfb_state_t;
 
-#define STATE_SIZE  sizeof(pwmfb_state_t)  // 20 Bytes
+#define STATE_SIZE  sizeof(pwmfb_state_t)  // 28 Bytes
 
 // ==================== irq_cb(state_buf) ====================
 // Vom Python-Wrapper per pin.irq() aufgerufen (soft IRQ).
@@ -47,6 +51,8 @@ static mp_obj_t mp_irq_cb(mp_obj_t buf_obj) {
     uint8_t  current = (SIO_GPIO_IN >> s->pin_num) & 1u;
     uint32_t diff    = now - s->last_chg;
 
+    s->irq_count++;
+
     if (diff >= DEBOUNCE_US && current != s->last_state) {
         if (current) {
             s->low_us = diff;
@@ -56,6 +62,8 @@ static mp_obj_t mp_irq_cb(mp_obj_t buf_obj) {
         s->last_upd   = now;
         s->last_chg   = now;
         s->last_state = current;
+    } else {
+        s->irq_errors++;
     }
     return mp_const_none;
 }
@@ -78,12 +86,27 @@ static mp_obj_t mp_get_raw(mp_obj_t buf_obj) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(mp_get_raw_obj, mp_get_raw);
 
+// ==================== get_health(state_buf) → (irq_count, irq_errors) ====================
+static mp_obj_t mp_get_health(mp_obj_t buf_obj) {
+    mp_buffer_info_t buf;
+    mp_get_buffer_raise(buf_obj, &buf, MP_BUFFER_READ);
+    pwmfb_state_t *s = (pwmfb_state_t*)buf.buf;
+
+    mp_obj_t items[2] = {
+        mp_obj_new_int(s->irq_count),
+        mp_obj_new_int(s->irq_errors),
+    };
+    return mp_obj_new_tuple(2, items);
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(mp_get_health_obj, mp_get_health);
+
 // ==================== Modul-Einstiegspunkt ====================
 mp_obj_t mpy_init(mp_obj_fun_bc_t *self, size_t n_args, size_t n_kw, mp_obj_t *args) {
     MP_DYNRUNTIME_INIT_ENTRY
 
-    mp_store_global(MP_QSTR_irq_cb,  MP_OBJ_FROM_PTR(&mp_irq_cb_obj));
-    mp_store_global(MP_QSTR_get_raw, MP_OBJ_FROM_PTR(&mp_get_raw_obj));
+    mp_store_global(MP_QSTR_irq_cb,     MP_OBJ_FROM_PTR(&mp_irq_cb_obj));
+    mp_store_global(MP_QSTR_get_raw,    MP_OBJ_FROM_PTR(&mp_get_raw_obj));
+    mp_store_global(MP_QSTR_get_health, MP_OBJ_FROM_PTR(&mp_get_health_obj));
 
     MP_DYNRUNTIME_INIT_EXIT
 }
