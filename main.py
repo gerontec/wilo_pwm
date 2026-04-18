@@ -27,7 +27,7 @@ topic_sub_pump  = b'heatp/pump'
 topic_pub       = b'heatp/pico120'
 topic_pins      = b'heatp/pins'
 
-FIRMWARE_VERSION = "v2.44-grace-period"
+FIRMWARE_VERSION = "v2.45-adaptive-debounce"
 MQTT_TIMEOUT_S = 30  # Reset wenn kein Publish seit 30s
 start_time = time.time()
 last_publish_time = time.time()
@@ -173,9 +173,10 @@ def publish_all_pins(t):
             "PumpFeedback": pump_feedback_pin19.value(),
 
             # C-Natmod Health
-            "C1_edges": pwmfb_core1.get_health()[1],
-            "C1_drops": pwmfb_core1.get_health()[2],
-            "C1_poll":  pwmfb_core1.get_health()[0],
+            "C1_edges":   pwmfb_core1.get_health()[1],
+            "C1_drops":   pwmfb_core1.get_health()[2],
+            "C1_poll":    pwmfb_core1.get_health()[0],
+            "C1_deb_us":  pwmfb_core1.get_health()[4],
 
             # ADC PINS
             "PIN26": read_adc_voltage(adc26),

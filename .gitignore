@@ -9,3 +9,5 @@
 !pwmfb_core1/
 !pwmfb_core1/**
 !pwmfeedback_core1.py
+!artikel*.tex
+!artikel*.pdf

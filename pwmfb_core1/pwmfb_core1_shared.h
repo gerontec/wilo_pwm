@@ -11,6 +11,7 @@ typedef struct {
     volatile uint32_t poll_count;   // incremented every Core 1 loop iteration
     volatile uint32_t edge_count;   // incremented on every valid edge
     volatile uint32_t debounce_drop;// edges dropped by debounce filter
+    volatile uint32_t debounce_us; // aktuell verwendeter Schwellwert (adaptiv)
     volatile uint8_t  ready;        // 1 = at least one valid measurement
     volatile uint8_t  _pad[3];
 } pwmfb_shared_t;

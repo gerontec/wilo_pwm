@@ -16,15 +16,16 @@ static mp_obj_t mp_c1_get_raw(void) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(mp_c1_get_raw_obj, mp_c1_get_raw);
 
-// get_health() → (poll_count, edge_count, debounce_drop, ready)
+// get_health() → (poll_count, edge_count, debounce_drop, ready, debounce_us)
 static mp_obj_t mp_c1_get_health(void) {
-    mp_obj_t items[4] = {
+    mp_obj_t items[5] = {
         mp_obj_new_int(g_pwmfb.poll_count),
         mp_obj_new_int(g_pwmfb.edge_count),
         mp_obj_new_int(g_pwmfb.debounce_drop),
         mp_obj_new_int(g_pwmfb.ready),
+        mp_obj_new_int(g_pwmfb.debounce_us),
     };
-    return mp_obj_new_tuple(4, items);
+    return mp_obj_new_tuple(5, items);
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(mp_c1_get_health_obj, mp_c1_get_health);
 
