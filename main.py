@@ -7,8 +7,7 @@ import sys
 import os
 import ujson
 import utime
-import pwmfeedback_core1 as pwmfeedback
-import pwmfb_core1
+import pwmfeedback_pio as pwmfeedback
 
 # ==================== KONFIGURATION ====================
 WATCHDOG_ENABLED = True
@@ -27,7 +26,7 @@ topic_sub_pump  = b'heatp/pump'
 topic_pub       = b'heatp/pico120'
 topic_pins      = b'heatp/pins'
 
-FIRMWARE_VERSION = "v2.49-debfix-hysterese"
+FIRMWARE_VERSION = "v2.50-pio-feedback"
 MQTT_TIMEOUT_S = 30  # Reset wenn kein Publish seit 30s
 start_time = time.time()
 last_publish_time = time.time()
@@ -42,7 +41,6 @@ last_boost_start = None  # wird beim ersten publish_all_pins gesetzt
 boost_active = False
 timers = []
 client = None
-_c1_poll_last = 0       # für Überlauf-sicheres Delta
 _feedback_err_count = 0 # Hysterese: Emergency erst nach 3 Fehlmessungen
 
 # ==================== HARDWARE & PIN-DEFINITIONEN ====================
@@ -119,7 +117,7 @@ def _is_feedback_error(feedback_data):
     return False
 
 def publish_all_pins(t):
-    global target_pwm, current_pwm, ramp_start_time, boost_active, _c1_poll_last, _feedback_err_count
+    global target_pwm, current_pwm, ramp_start_time, boost_active, _feedback_err_count
 
     # --- PUMPEN FEEDBACK aus Modul ---
     feedback_data = pwmfeedback.get_pump_feedback(feedback_pin5.value())
@@ -142,9 +140,6 @@ def publish_all_pins(t):
     # --- ENDE PWM BERECHNUNG ---
 
     try:
-        _c1h = pwmfb_core1.get_health()
-        _c1_delta = (_c1h[0] - _c1_poll_last) & 0xFFFFFFFF  # überlaufsicher
-
         ip = sta.ifconfig()[0] if sta.isconnected() else "0.0.0.0"
         wlan_status = 1 if sta.isconnected() else 0
         mem_pct = get_mem_percent()
@@ -182,12 +177,6 @@ def publish_all_pins(t):
             "PIN19": pump_feedback_pin19.value(),
             "PumpFeedback": pump_feedback_pin19.value(),
 
-            # C-Core1 Health (poll als Delta — überlaufsicher bei uint32)
-            "C1_poll":   _c1_delta,
-            "C1_edges":  _c1h[1],
-            "C1_drops":  _c1h[2],
-            "C1_deb_us": _c1h[4] if len(_c1h) > 4 else 0,
-
             # ADC PINS
             "PIN26": read_adc_voltage(adc26),
             "PIN27": read_adc_voltage(adc27),
@@ -221,7 +210,6 @@ def publish_all_pins(t):
         client.publish(topic_pub, status.encode())
         global last_publish_time
         last_publish_time = time.time()
-        _c1_poll_last = pwmfb_core1.get_health()[0]
         # WDT wird NUR im Main-Loop gefüttert (Zeile ~382)
         # Hier KEIN feed_watchdog() — Timer-IRQ darf WDT nicht füttern
 
