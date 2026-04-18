@@ -28,8 +28,8 @@ done
 if [ ${#FILES[@]} -eq 0 ]; then
     FILES=(
         main.py
-        pwmfeedback_c/pwmfeedback.py
-        pwmfeedback_c/_pwmfeedback.mpy
+        pwmfeedback_pio.py
+        pwmfeedback_core1.py
     )
 fi
 
