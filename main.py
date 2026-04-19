@@ -173,6 +173,12 @@ def publish_all_pins(t):
             "PIN5_Freq_Hz": feedback_data["PIN5_Freq_Hz"],
             "PumpDuty": feedback_data["PumpDuty"],
             "PumpStatus": feedback_data["PumpStatus"],
+            # Diagnose-Felder (nur im Test-Modul vorhanden, sonst ignoriert)
+            "PIO_MHz":      feedback_data.get("PIO_MHz", 1),
+            "PIO_Total":    feedback_data.get("PIO_Total", 0),
+            "PIO_Valid":    feedback_data.get("PIO_Valid", 0),
+            "PIO_Glitch":   feedback_data.get("PIO_Glitch", 0),
+            "PIO_ValidPct": feedback_data.get("PIO_ValidPct", 0.0),
 
             "PIN19": pump_feedback_pin19.value(),
             "PumpFeedback": pump_feedback_pin19.value(),
@@ -321,6 +327,12 @@ def sub_cb(topic, msg):
                 val = int(cmd[4:])
                 PWM_MIN = max(0, min(PWM_MAX, val))
                 mqtt_log(f"PWM_MIN gesetzt → {PWM_MIN}")
+            elif cmd == "la":
+                mqtt_log("LA: Logic Analyzer startet...")
+                try:
+                    exec(open('la_pin5.py').read())
+                except Exception as e:
+                    mqtt_log(f"LA Fehler: {e}")
             else:
                 mqtt_log(f"Unbekannt: {cmd}")
 

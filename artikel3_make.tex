@@ -351,6 +351,85 @@ Deploy per WebREPL, kein BOOTSEL noetig:
 \end{lstlisting}
 
 % -----------------------------------------------------------------------
+\section{Logic Analyzer: EMI-Charakterisierung per PIO}
+
+Um die EMI-Stoerungen direkt zu messen, wurde ein zweites PIO-Programm
+als Logikanalysator gebaut (\texttt{la\_pin5.py}).
+Statt Pulse zu messen, sampelt es den Pin Bit fuer Bit mit
+\texttt{in\_(pins,~1)} und schiebt je 32 Bit per Autopush in den FIFO.
+Python liest die Woerter, expandiert die Bits und sucht Flanken.
+
+Zwei Abtastraten wurden verglichen:
+
+\medskip
+\noindent\textbf{125\,MHz (8\,ns/Sample) --- Glitch-Diagnose:}
+
+Das Capture-Fenster betraegt 1300\,$\times$\,32\,$\times$\,8\,ns\,$\approx$\,333\,\textmu s ---
+ein winziger Ausschnitt einer 13\,333\,\textmu s-Periode.
+Fuer 2\,Sekunden vollstaendige Erfassung waere ein Puffer von
+$\frac{2 \times 125\,000\,000}{32} \approx 7{,}8\,\text{M Woerter} = 31\,\text{MB}$
+noetig --- der Pico hat gesamt 264\,KB.
+125\,MHz ist also ausschliesslich fuer Kurzzeit-Diagnose geeignet.
+
+Ergebnis des 125\,MHz-Captures:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Kenngroesse} & \textbf{Wert} \\
+\midrule
+Fenster              & 202\,\textmu s @ 125\,MHz / 8\,ns \\
+HIGH-Flanken $\geq$ 10\,\textmu s & 0 (keine echten HIGH-Phasen im Ausschnitt) \\
+HIGH-Glitches (7--8\,\textmu s)   & 6 Spikes \\
+LOW-Glitches ($\approx$10\,\textmu s) & 1 Spike \\
+Glitch-Rate          & 58\,\% aller Ereignisse \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Die EMI-Spikes haben eine Dauer von \textbf{7--8\,\textmu s}.
+Das erklaert das Versagen bei 125\,MHz (8\,ns Abtastrate):
+Jeder Spike trifft mit hoher Wahrscheinlichkeit eine \texttt{jmp(pin)}-Instruktion
+und beendet die LOW-Messung vorzeitig.
+Bei 1\,MHz (2\,\textmu s/Zyklus) sind diese Spikes dagegen \emph{nicht} vollstaendig
+unsichtbar --- 7\,\textmu s entsprechen ca.\ 3 Zaehlzyklen.
+Der entscheidende Unterschied ist der \textbf{Median-Filter}:
+Bei 30 Messungen pro Puffer genuegen wenige Ausreisser nicht,
+um den Median zu verschieben.
+
+\medskip
+\noindent\textbf{24\,kHz (41,7\,\textmu s/Sample) --- Signalstruktur:}
+
+Um die echten 75\,Hz-Flanken sichtbar zu machen, wurde die Abtastrate
+auf 24\,kHz reduziert --- 1500\,$\times$\,32 Samples = \textbf{2,0\,Sekunden} Fenster
+bei nur 6\,KB Puffergroe\ss{}e.
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Kenngroesse} & \textbf{Gemessen (LA 24\,kHz)} \\
+\midrule
+Frequenz             & 75{,}35\,Hz \\
+Duty-Cycle           & 32{,}7\,\% \\
+HIGH-Dauer           & Ø\,4338\,\textmu s (min 1208, max 4374) \\
+LOW-Dauer            & Ø\,8933\,\textmu s (min 4083, max 8999) \\
+Glitches ($<$1\,ms)  & 0 --- unterhalb der 41\,\textmu s-Aufloesung \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Das echte Wilo-Signal ist ein sauberes 75\,Hz-Rechteck.
+Die 7--8\,\textmu s-Spikes liegen weit unter der 41\,\textmu s-Aufloesung
+und sind bei dieser Abtastrate vollstaendig unsichtbar.
+
+\textbf{Fazit:} Hoehere Abtastrate sieht mehr Stoerungen ---
+nicht weil das Signal schlechter wird, sondern weil die Messung
+empfindlicher ist. 1\,MHz ist der Sweet-Spot:
+Ausreichend schnell fuer prazise 75\,Hz-Messung,
+ausreichend langsam um Motorspikes unter 2\,\textmu s auszublenden,
+und mit Median-Filter robust gegen die gelegentlichen 7--8\,\textmu s-Ausreisser.
+
+% -----------------------------------------------------------------------
 \section{Messwerte im Betrieb}
 
 Gemessene Werte der Wilo iPWM-Pumpe im Normalbetrieb (v2.60, Median-Filter):
