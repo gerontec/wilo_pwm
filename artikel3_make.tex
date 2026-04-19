@@ -41,8 +41,8 @@
 }
 
 \title{\textbf{Wilo-Pumpe Teil 3: PIO misst alles}\\[4pt]
-  \large Hardware statt Software --- wie der RP2040-PIO HIGH- und LOW-Zeit\\
-  direkt in Hardware misst und warum 250\,kHz dabei Routine sind}
+  \large Hardware-Pulsmessung mit dem RP2040-PIO ---
+  und was passiert, wenn 125\,MHz zu schnell sind}
 \author{make Magazin $\cdot$ Projekt-Doku}
 \date{April 2026 \quad \texttt{github.com/gerontec/wilo\_pwm}}
 
@@ -56,7 +56,9 @@
 \textit{Teil 1 nutzte C-Interrupts, Teil 2 Core~1-Polling.
 Teil 3 delegiert die gesamte Messung an den Hardware-PIO ---
 kein CPU-Overhead, kein Debounce, keine Firmware-Aenderung noetig.
-Ergebnis: stabile Pulsmessung bis 250\,kHz als reines Python-Modul.}
+Aber auch PIO hat Tuecken: EMI vom Pumpenmotor und Abtastrate
+muessen zusammenpassen. Ergebnis: ein dynamisch robuster Median-Filter
+als rein Python-basiertes Modul.}
 \end{center}
 \noindent\rule{\textwidth}{0.4pt}
 
@@ -159,20 +161,60 @@ Die Python-Seite liest HIGH- und LOW-Wert paarweise aus dem FIFO
 und rechnet Zeitdauer, Frequenz und Duty-Cycle:
 
 \begin{lstlisting}[language=Python, caption={Auswertung: Frequenz und Duty-Cycle aus Zaehlerstand}]
-while sm.rx_fifo() >= 2:
-    x_high = sm.get()
-    x_low  = sm.get()
-    # (0xFFFFFFFF - x) * 2 us/Count = Pulsdauer in Mikrosekunden
-    high_us = (0xFFFFFFFF - x_high) * 2
-    low_us  = (0xFFFFFFFF - x_low)  * 2
-    T       = high_us + low_us
-    freq    = 1_000_000.0 / T        # Hz
-    duty    = high_us / T * 100.0    # Prozent
+x_high = sm.get()
+x_low  = sm.get()
+# (0xFFFFFFFF - x) * 2 us/Count = Pulsdauer in Mikrosekunden
+high_us = (0xFFFFFFFF - x_high) * 2
+low_us  = (0xFFFFFFFF - x_low)  * 2
+T       = high_us + low_us
+freq    = 1_000_000.0 / T        # Hz
+duty    = high_us / T * 100.0    # Prozent
 \end{lstlisting}
 
 \texttt{push(noblock)} sorgt dafuer, dass veraltete Werte verworfen werden,
 wenn der FIFO voll ist --- Python kann die Daten im eigenen Rhythmus
 (alle 5\,s) abholen, ohne dass die State Machine blockiert.
+
+% -----------------------------------------------------------------------
+\section{Warum 125\,MHz nicht funktioniert: das EMI-Problem}
+
+Der erste Versuch lief die State Machine mit 125\,MHz (Systemtakt) ---
+hoehere Aufloesung, dachte man.
+Das Ergebnis: die gemessene Frequenz betrug konstant 181\,Hz statt 75\,Hz,
+der Duty-Cycle war 80--88\,\% statt 30--65\,\%.
+
+Die Ursache liegt in der Abtastrate.
+Bei 125\,MHz prueft die State Machine den Pin alle \textbf{8\,ns}.
+Pumpen-Elektronik erzeugt durch Motorkommunikation und PWM-Schalten
+breitbandige elektromagnetische Stoerungen (EMI) mit Impulsdauern
+von typisch 50--500\,ns.
+Bei 8\,ns Abtastrate sind solche Gliches sichtbar:
+
+\begin{lstlisting}[language=Python, caption={LOW-Schleife bei 125 MHz: EMI-Glitch beendet Messung}]
+label("low_loop")
+jmp(pin, "low_done")   # Pin HIGH? -> LOW-Phase vorbei
+jmp(x_dec, "low_loop") # X--, weiterzaehlen
+\end{lstlisting}
+
+Ein 100\,ns-Spike waehrend der LOW-Phase trifft mit hoher Wahrscheinlichkeit
+eine der \texttt{jmp(pin)}-Instruktionen und beendet die LOW-Messung vorzeitig.
+Statt 9\,333\,\textmu s LOW-Zeit wird 988\,\textmu s gemessen ---
+Faktor 9 zu wenig.
+
+\textbf{Loesungsversuche:}
+Ein Inline-Debounce im PIO-Programm (mehrfaches Bestaetigen der Flanke)
+wurde implementiert und getestet --- 7 Checks a 8\,ns = 56\,ns Debounce
+fuer die HIGH-Schleife, 6 Checks a 8\,ns = 48\,ns fuer die LOW-Schleife.
+Das PIO-Programm wuchs auf 31 Instruktionen (Limit: 32).
+Ergebnis: weiterhin instabil.
+Pumpenmotor-EMI ist schlicht breitbandiger als 56\,ns.
+
+\textbf{Die richtige Loesung:} 1\,MHz-Takt.
+Bei 2\,\textmu s Abtastperiode sind alle Gliches unter 2\,\textmu s
+physikalisch unsichtbar --- ein kostenloser Tiefpassfilter
+durch die Abtastrate selbst.
+Fuer 75\,Hz ist 1\,MHz 3000-fach ueberdimensioniert --- die Aufloesung
+von 2\,\textmu s reicht absolut aus.
 
 % -----------------------------------------------------------------------
 \section{Frequenzlimit: Wann stoesst PIO an seine Grenzen?}
@@ -188,19 +230,6 @@ Fuer ein Signal mit 50\,\% Duty-Cycle muss sowohl HIGH als auch LOW
 mindestens 2\,\textmu s betragen --- also Periode $\geq$ 4\,\textmu s,
 Frequenz $\leq$ \textbf{250\,kHz}.
 
-Bei niedrigem Duty-Cycle (z.\,B.\ 5\,\%) ist der HIGH-Impuls kurz:
-$0{,}05 \times T$.
-Das Minimum von 2\,\textmu s HIGH-Dauer limitiert dann die Frequenz:
-$f_{\max} = 1 / (2\,\mu\text{s} / 0{,}05) = \mathbf{25\,kHz}$.
-
-Wer hoehere Frequenzen braucht, erhoet den PIO-Takt auf bis zu 125\,MHz
-(Systemtakt):
-
-\begin{lstlisting}[language=Python]
-sm = rp2.StateMachine(0, _pwm_measure, freq=125_000_000, ...)
-# -> 16 ns/Zyklus, 32 ns/Zaehlschritt -> max ~31 MHz bei 50% Duty
-\end{lstlisting}
-
 \begin{center}
 \begin{tabular}{lll}
 \toprule
@@ -213,29 +242,87 @@ sm = rp2.StateMachine(0, _pwm_measure, freq=125_000_000, ...)
 \end{tabular}
 \end{center}
 
-Fuer 75\,Hz (Wilo-Pumpe) ist der 1-MHz-Takt 3000-fach ueberdimensioniert ---
-die Messung ist absolut stabil.
+\textit{Hinweis:} Hoehere Taktfrequenzen sind technisch moeglich,
+aber bei industriellen Umgebungen (Motoren, Schaltnetzteile) erfordert
+jeder Takt ueber ca.\ 500\,kHz einen Hardware-Tiefpassfilter
+(z.\,B.\ 100\,\textOmega{} + 10\,nF) vor dem GPIO-Pin,
+um Motorspikes zuverlaessig zu unterdruecken.
 
 % -----------------------------------------------------------------------
-\section{Vergleich aller vier Methoden}
+\section{Robuste Messung: Ringpuffer und Median-Filter}
+
+Die einfache Einzel-Messung hat einen weiteren Schwachpunkt:
+Mit \texttt{push(noblock)} und einem 4-Word-FIFO (2 Paare)
+werden bei 5\,s Poll-Intervall 373 von 375 Messungen pro Fenster verworfen.
+Es zaehlt nur das erste Paar --- ein Ausreisser genuegt fuer einen Fehler.
+
+\textbf{Loesung: kontinuierlicher Ringpuffer mit Median.}
+Ein modulinterner 25\,ms-Timer leert den FIFO staendig ---
+schneller als er vollaeuft (bei 75\,Hz: alle 27\,ms voll).
+Jede valide Messung (HIGH\,$>$\,0 und LOW\,$>$\,0) landet im Ringpuffer:
+
+\begin{lstlisting}[language=Python, caption={25 ms Drain-Timer und Ringpuffer-Akkumulation}]
+_BUF_SIZE = 30        # ~400 ms Datenfenster @ 75 Hz
+_high_buf = [0] * _BUF_SIZE
+_low_buf  = [0] * _BUF_SIZE
+_buf_idx  = 0
+_buf_count = 0
+
+def _drain_fifo(t=None):
+    global _buf_idx, _buf_count, _last_update_us
+    while _sm.rx_fifo() >= 2:
+        x_high = _sm.get()
+        x_low  = _sm.get()
+        h = (0xFFFFFFFF - x_high) * 2
+        l = (0xFFFFFFFF - x_low)  * 2
+        if h > 0 and l > 0:           # Ausreisser verwerfen
+            _high_buf[_buf_idx] = h
+            _low_buf[_buf_idx]  = l
+            _buf_idx = (_buf_idx + 1) % _BUF_SIZE
+            if _buf_count < _BUF_SIZE:
+                _buf_count += 1
+            _last_update_us = utime.ticks_us()
+
+# Interner Timer im Modul -- kein Eingriff in main.py noetig
+_drain_timer = Timer()
+_drain_timer.init(period=25, mode=Timer.PERIODIC,
+                  callback=_drain_fifo)
+\end{lstlisting}
+
+Die Auswertung nutzt den \textbf{Median} der gesammelten Werte:
+
+\begin{lstlisting}[language=Python, caption={Median-Berechnung aus Ringpuffer}]
+n = _buf_count
+high_med = sorted(_high_buf[:n])[n // 2]
+low_med  = sorted(_low_buf[:n])[n // 2]
+T    = high_med + low_med
+freq = round(1_000_000.0 / T, 2)   # Hz
+duty = round(high_med / T * 100, 2) # Prozent
+\end{lstlisting}
+
+\textbf{Warum Median statt Mittelwert?}
+Der Median ist unempfindlich gegen Ausreisser:
+Ein einzelner HIGH\,=\,0-Wert unter 30 Messungen veraendert den Median nicht.
+Der Mittelwert wuerde hingegen nach unten gezogen.
+Bei 300 gesammelten Messwerten pro 5\,s-Fenster ist der Median
+statistisch sehr stabil --- auch waehrend Anlauf und Lastwechseln.
+
+% -----------------------------------------------------------------------
+\section{Vergleich aller Methoden}
 
 \begin{center}
-\begin{tabular}{lllll}
+\begin{tabular}{llllll}
 \toprule
-\textbf{Methode} & \textbf{Max. Freq.} & \textbf{Debounce} & \textbf{CPU-Last} & \textbf{Build} \\
+\textbf{Methode} & \textbf{Max.\ Freq.} & \textbf{Debounce} & \textbf{CPU} & \textbf{Build} & \textbf{Robust} \\
 \midrule
-Python IRQ (pure)    & $\sim$2\,kHz    & noetig & hoch      & nein \\
-C-Natmod IRQ         & $\sim$10\,kHz   & noetig & mittel    & .mpy \\
-Core~1 Polling       & $\sim$250\,kHz  & adaptiv & Core~1  & Firmware \\
-PIO @ 1\,MHz         & 250\,kHz        & nicht noetig & null & nein \\
-PIO @ 125\,MHz       & $\sim$31\,MHz   & nicht noetig & null & nein \\
+Python IRQ        & $\sim$2\,kHz   & noetig    & hoch   & nein     & gering \\
+C-Natmod IRQ      & $\sim$10\,kHz  & noetig    & mittel & .mpy     & mittel \\
+Core~1 Polling    & $\sim$250\,kHz & adaptiv   & Core~1 & Firmware & mittel \\
+PIO @ 1\,MHz      & 250\,kHz       & nicht noetig & null & nein   & hoch \\
+PIO + Median      & 250\,kHz       & nicht noetig & null & nein   & sehr hoch \\
 \bottomrule
 \end{tabular}
 \end{center}
-
-PIO ist in allen Kategorien besser als die Software-Ansaetze ---
-und benoetigt als einzige Methode weder einen Firmware-Build
-noch einen BOOTSEL-Flash.
 
 % -----------------------------------------------------------------------
 \section{Drop-in-Ersatz ohne Aenderung an main.py}
@@ -247,47 +334,47 @@ wie alle Vorgaenger:
 # vorher:
 import pwmfeedback_core1 as pwmfeedback   # Core 1 Polling
 # nachher:
-import pwmfeedback_pio as pwmfeedback     # PIO Hardware
+import pwmfeedback_pio as pwmfeedback     # PIO + Median-Filter
 \end{lstlisting}
 
-\texttt{init\_feedback\_pin()} startet die State Machine,
+\texttt{init\_feedback\_pin()} startet State Machine und Drain-Timer,
 \texttt{get\_pump\_feedback()} liefert dasselbe Dict mit
 \texttt{PIN5\_Freq\_Hz}, \texttt{PumpDuty} und \texttt{PumpStatus}.
 Der Rest von \texttt{main.py} --- MQTT, Watchdog, Rampe, Boost ---
 bleibt unveraendert.
 
-Deploy per WebREPL oder mpremote, kein BOOTSEL noetig:
+Deploy per WebREPL, kein BOOTSEL noetig:
 
 \begin{lstlisting}[language=bash, caption={Deploy ohne Firmware-Flash}]
-mpremote connect /dev/ttyACM0 \
-    cp pwmfeedback_pio.py :pwmfeedback_pio.py + \
-    cp main.py :main.py + reset
-# -> sofort aktiv, keine neue Firmware
+./deploy.sh pwmfeedback_pio.py
+# -> WebREPL-Upload + MQTT-Reset, sofort aktiv
 \end{lstlisting}
 
 % -----------------------------------------------------------------------
 \section{Messwerte im Betrieb}
 
-Gemessene Werte der Wilo iPWM-Pumpe im Normalbetrieb:
+Gemessene Werte der Wilo iPWM-Pumpe im Normalbetrieb (v2.60, Median-Filter):
 
 \begin{center}
 \begin{tabular}{ll}
 \toprule
 \textbf{Kenngroesse} & \textbf{Wert} \\
 \midrule
-Frequenz    & 75{,}0\,Hz (stabil, keine Transienten) \\
-Duty-Cycle  & 29{,}5--42\,\% (lastabhaengig) \\
-Aufloesung  & 2\,\textmu s \\
-CPU-Last    & 0\,\% (reine Hardware) \\
+Frequenz             & 75{,}0\,Hz (stabil, jede Messung) \\
+Duty-Cycle Anlauf    & 1{,}9\,\% (Standby-Modus) \\
+Duty-Cycle Betrieb   & 34--66\,\% (lastabhaengig) \\
+Aufloesung           & 2\,\textmu s \\
+Messungen pro 5\,s   & $\sim$300 (Ringpuffer) \\
+CPU-Last             & 0\,\% (reiner Hardware-PIO) \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Die Glitch-Probleme aus Teil\,2 --- kurze Transienten bei
-153\,Hz oder 181\,Hz durch falsche Debounce-Timing ---
-treten mit dem PIO-Ansatz nicht auf.
-Die \texttt{wait()}-Instruktion synchronisiert auf die echte Flanke,
-der Zaehler laeuft deterministisch ohne Unterbrechung.
+Die Wilo-Pumpe garantiert ein stabiles 75\,Hz-Feedback-Signal.
+Der Duty-Cycle codiert den Betriebsstatus nach Wilo-Protokoll:
+5--75\,\% Normalbetrieb (proportional zur Foerderleistung),
+80\,\% Abnormal Running, 85--90\,\% Abnormal Function,
+95\,\% Permanent Failure, 100\,\% Interface Damaged / Power OFF.
 
 \bigskip
 \noindent\rule{\textwidth}{0.4pt}

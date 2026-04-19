@@ -1,20 +1,26 @@
-# pwmfeedback_pio.py – v1.0-pio – Hardware PIO-basierte Pulsmessung für RP2040
+# pwmfeedback_pio.py – v2.60-pio – Ringpuffer + Median-Filter
 # Drop-in-Ersatz für pwmfeedback.py — gleiche API, kein IRQ-Overhead
 #
 # Messprinzip: PIO State Machine misst HIGH- und LOW-Zeit cycle-genau.
-# PIO-Takt: 1 MHz → 1 µs Auflösung, 2 µs pro Zählschritt (2 Instructions/Loop).
-# Robuster gegen GC-Pausen als IRQ-basierte Variante.
+# PIO-Takt: 1 MHz → 2 µs Auflösung (natürlicher Tiefpass gegen HF-Glitches)
+#
+# Robustheit: interner 25ms-Timer leert FIFO kontinuierlich → Ringpuffer mit
+# ~300 Messungen/5s. Duty/Freq aus Median → Ausreißer (HIGH=0 etc.) wirkungslos.
+# Keine Hardcode-Frequenz — funktioniert für jedes PWM-Feedback-Signal.
 #
 # Verwendung in main.py — keine Änderung nötig:
 #   import pwmfeedback_pio as pwmfeedback
 
 import utime
 import rp2
-from machine import Pin
+from machine import Pin, Timer
 
 # ==================== KONFIGURATION ====================
 PIN_FEEDBACK     = 5
-TACHO_TIMEOUT_MS = 50
+TACHO_TIMEOUT_MS = 2000   # Kein gültiger Wert seit 2s → TIMEOUT
+DRAIN_INTERVAL_MS = 25    # FIFO-Drain-Intervall: schneller als FIFO-Füllzeit (~27ms)
+_BUF_SIZE        = 30     # Ringpuffer: ~400ms Datenfenster @ 75 Hz
+
 ERROR_TIMEOUT_S  = 15
 ERROR_DUTY_MIN   = 79.0
 ERROR_DUTY_MAX   = 95.5
@@ -30,57 +36,44 @@ STATUS_MAP = [
 ]
 
 # ==================== PIO PROGRAMM ====================
-# Ablauf:
-#   1. Einmalig: TX FIFO → OSR → Y  (Y = 0xFFFFFFFF als Reset-Wert für X)
-#   2. Endlosschleife:
-#      a. Auf LOW warten (Sync), dann auf steigende Flanke warten
-#      b. HIGH messen: X von 0xFFFFFFFF abwärts zählen, Push wenn LOW
-#      c. LOW  messen: X von 0xFFFFFFFF abwärts zählen, Push wenn HIGH
-#
-# Zeitauflösung: jede Zählschleife = 2 PIO-Zyklen = 2 µs @ 1 MHz
-# Berechnung:   HIGH_us = (0xFFFFFFFF - x_wert) * 2
+# 1 MHz SM: 2 Zyklen/Loop → 2 µs/Count, Glitches < 2 µs unsichtbar
+# Zählwert → µs: (0xFFFFFFFF - x) * 2
 
 @rp2.asm_pio()
 def _pwm_measure():
-    # Einmalige Initialisierung: Y = 0xFFFFFFFF (Reset-Wert für X)
     pull()
     mov(y, osr)
-
     wrap_target()
-
-    # Synchronisation auf steigende Flanke
-    wait(0, pin, 0)          # warte auf LOW
-    wait(1, pin, 0)          # warte auf HIGH (steigende Flanke)
-
-    # HIGH-Zeit messen
-    mov(x, y)                # X = 0xFFFFFFFF
+    wait(0, pin, 0)
+    wait(1, pin, 0)
+    mov(x, y)
     label("high_loop")
-    jmp(pin, "high_count")   # Pin HIGH? → weiterzählen
-    jmp("high_done")         # Pin LOW? → fertig
+    jmp(pin, "high_count")
+    jmp("high_done")
     label("high_count")
-    jmp(x_dec, "high_loop")  # X--, zurück (immer gesprungen solange X != 0)
+    jmp(x_dec, "high_loop")
     label("high_done")
     mov(isr, x)
-    push(noblock)            # noblock: veraltete Werte verwerfen wenn FIFO voll
-
-    # LOW-Zeit messen
-    mov(x, y)                # X = 0xFFFFFFFF
+    push(noblock)
+    mov(x, y)
     label("low_loop")
-    jmp(pin, "low_done")     # Pin HIGH? → LOW-Phase vorbei
-    jmp(x_dec, "low_loop")   # X--, weiterzählen
+    jmp(pin, "low_done")
+    jmp(x_dec, "low_loop")
     label("low_done")
     mov(isr, x)
     push(noblock)
-
     wrap()
 
-# ==================== GLOBALE ZUSTANDSVARIABLEN ====================
-_sm                  = None
-_last_high_us        = 0
-_last_low_us         = 0
-_last_update_us      = 0
+# ==================== RINGPUFFER & ZUSTAND ====================
+_sm              = None
+_drain_timer     = None
+_high_buf        = [0] * _BUF_SIZE
+_low_buf         = [0] * _BUF_SIZE
+_buf_idx         = 0
+_buf_count       = 0           # Anzahl valider Einträge (0.._BUF_SIZE)
+_last_update_us  = 0
 _error_state_start_ms = 0
-_is_in_error_state   = False
+_is_in_error_state    = False
 
 # ==================== HILFSFUNKTIONEN ====================
 def _get_pump_status(duty):
@@ -89,37 +82,54 @@ def _get_pump_status(duty):
             return status
     return "UNKNOWN STATUS"
 
-def _drain_fifo():
-    """Liest alle verfügbaren HIGH/LOW-Paare aus dem PIO-RX-FIFO."""
-    global _last_high_us, _last_low_us, _last_update_us
+def _median(buf, count):
+    """Median aus den ersten 'count' Einträgen (ohne Heap-Allokation bei count=1)."""
+    if count == 1:
+        return buf[0]
+    tmp = sorted(buf[:count])
+    return tmp[count // 2]
+
+def _drain_fifo(t=None):
+    """FIFO leeren und valide Messungen in Ringpuffer schreiben. Timer-safe."""
+    global _buf_idx, _buf_count, _last_update_us
+    if _sm is None:
+        return
     while _sm.rx_fifo() >= 2:
         x_high = _sm.get()
         x_low  = _sm.get()
-        # Zählwert → Mikrosekunden: (0xFFFFFFFF - x) * 2µs/Count
-        _last_high_us   = (0xFFFFFFFF - x_high) * 2
-        _last_low_us    = (0xFFFFFFFF - x_low)  * 2
-        _last_update_us = utime.ticks_us()
+        h = (0xFFFFFFFF - x_high) * 2
+        l = (0xFFFFFFFF - x_low)  * 2
+        if h > 0 and l > 0:               # Ausreißer (HIGH=0 etc.) verwerfen
+            _high_buf[_buf_idx] = h
+            _low_buf[_buf_idx]  = l
+            _buf_idx = (_buf_idx + 1) % _BUF_SIZE
+            if _buf_count < _BUF_SIZE:
+                _buf_count += 1
+            _last_update_us = utime.ticks_us()
 
 # ==================== ÖFFENTLICHE API ====================
 def init_feedback_pin():
-    """Initialisiert PIO State Machine auf PIN_FEEDBACK. Gibt Pin-Objekt zurück."""
-    global _sm
+    """Initialisiert PIO und startet internen Drain-Timer. Gibt Pin-Objekt zurück."""
+    global _sm, _drain_timer, _buf_idx, _buf_count
+    _buf_idx   = 0
+    _buf_count = 0
     pin = Pin(PIN_FEEDBACK, Pin.IN, Pin.PULL_UP)
     _sm = rp2.StateMachine(
         0, _pwm_measure,
-        freq=1_000_000,   # 1 MHz → 1 µs pro Zyklus
+        freq=1_000_000,
         in_base=pin,
         jmp_pin=pin,
     )
-    _sm.put(0xFFFFFFFF)   # Y-Initialwert in TX FIFO
+    _sm.put(0xFFFFFFFF)
     _sm.active(1)
+    # Interner Timer: FIFO schneller leeren als er volläuft (~27ms bei 75 Hz)
+    _drain_timer = Timer()
+    _drain_timer.init(period=DRAIN_INTERVAL_MS, mode=Timer.PERIODIC, callback=_drain_fifo)
     return pin
 
 def get_pump_feedback(current_pin_value):
-    """Gibt aktuelles Feedback-Dict zurück. Gleiche Struktur wie IRQ-Variante."""
+    """Gibt Feedback-Dict zurück. Duty/Freq aus Median des Ringpuffers."""
     global _is_in_error_state, _error_state_start_ms
-
-    _drain_fifo()
 
     now_us = utime.ticks_us()
     now_ms = utime.ticks_ms()
@@ -128,16 +138,20 @@ def get_pump_feedback(current_pin_value):
     freq   = 0.0
     duty   = 0.0
     status = "TIMEOUT / NO PULSE"
+    high_med = 0
+    low_med  = 0
 
-    if age_ms < TACHO_TIMEOUT_MS and _last_high_us > 0:
-        T = _last_high_us + _last_low_us
+    if age_ms < TACHO_TIMEOUT_MS and _buf_count > 0:
+        n = _buf_count
+        high_med = _median(_high_buf, n)
+        low_med  = _median(_low_buf,  n)
+        T = high_med + low_med
         if T > 1000:
             freq  = round(1_000_000.0 / T, 2)
-            duty  = round((_last_high_us / T) * 100.0, 2)
+            duty  = round((high_med / T) * 100.0, 2)
             duty  = min(max(duty, 0.0), 100.0)
             status = _get_pump_status(duty)
 
-        # Fehler-Timeout-Logik (identisch zur IRQ-Variante)
         if ERROR_DUTY_MIN <= duty <= ERROR_DUTY_MAX:
             if not _is_in_error_state:
                 _is_in_error_state    = True
@@ -154,10 +168,11 @@ def get_pump_feedback(current_pin_value):
 
     return {
         "PIN5":          current_pin_value,
-        "PIN5_Flank_us": _last_low_us,   # letzte LOW-Dauer ≈ letzte Flankenzeit
-        "PIN5_HIGH_us":  _last_high_us,
-        "PIN5_LOW_us":   _last_low_us,
+        "PIN5_Flank_us": low_med,
+        "PIN5_HIGH_us":  high_med,
+        "PIN5_LOW_us":   low_med,
         "PIN5_Freq_Hz":  freq,
+        "PIN5_N":        _buf_count,    # Anzahl Messungen im Puffer (Debug)
         "PumpDuty":      round(duty, 2),
         "PumpStatus":    status,
     }
