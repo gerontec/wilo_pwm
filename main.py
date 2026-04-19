@@ -136,6 +136,12 @@ def publish_all_pins(t):
             mqtt_log(f"NOTFALL: Feedback-Fehler ({feedback_data['PumpStatus']}) → MAX PWM")
     else:
         _feedback_err_count = 0
+        # Automatische Erholung: wenn NOTFALL target auf MAX gesetzt hat
+        # und Feedback jetzt wieder gesund ist, auf TARGET_PWM zurueckrampen
+        if target_pwm == PWM_MAX and not boost_active:
+            target_pwm = TARGET_PWM
+            ramp_start_time = None
+            mqtt_log(f"Feedback OK → Rampe zurueck auf {TARGET_PWM}")
 
     # --- ENDE PWM BERECHNUNG ---
 
