@@ -185,6 +185,7 @@ def publish_all_pins(t):
             "PIO_Valid":    feedback_data.get("PIO_Valid", 0),
             "PIO_Glitch":   feedback_data.get("PIO_Glitch", 0),
             "PIO_ValidPct": feedback_data.get("PIO_ValidPct", 0.0),
+            "DrainMs":      feedback_data.get("DrainMs", 0),
 
             "PIN19": pump_feedback_pin19.value(),
             "PumpFeedback": pump_feedback_pin19.value(),
