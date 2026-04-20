@@ -127,9 +127,10 @@ def publish_all_pins(t):
     # Überdrehzahl: nur loggen, kein Eingriff
     duty_now = feedback_data["PumpDuty"]
     if duty_now > 97.0:
-        mqtt_log(f"Überdrehzahl: {duty_now}% – nur Messung, keine Aktion")
+        mqtt_log(f"Überdrehzahl: {duty_now}% – nur Messung")
 
-    if target_pwm > 0 and uptime > 60 and _is_feedback_error(feedback_data):
+    pump_running = pump_feedback_pin19.value() == 1
+    if target_pwm > 0 and uptime > 60 and pump_running and _is_feedback_error(feedback_data):
         _feedback_err_count += 1
         if _feedback_err_count >= 3 and _feedback_emergency < 3:
             target_pwm = PWM_MAX
@@ -142,9 +143,11 @@ def publish_all_pins(t):
             mqtt_log(f"NOTFALL {_feedback_emergency}/3: {feedback_data['PumpStatus']} → MAX PWM")
         elif _feedback_err_count >= 3:
             _feedback_err_count = 0
-            mqtt_log(f"Unterdrehzahl: Max-Versuche erreicht, kein Eingriff mehr")
     else:
         _feedback_err_count = 0
+        # Emergency-Zähler zurücksetzen wenn Pumpe wieder normal läuft
+        if pump_running and _feedback_emergency > 0 and not _is_feedback_error(feedback_data):
+            _feedback_emergency = 0
         if target_pwm == PWM_MAX and not boost_active:
             target_pwm = TARGET_PWM
             ramp_start_time = None
