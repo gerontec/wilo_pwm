@@ -1,7 +1,10 @@
+from machine import WDT
+wdt = WDT(timeout=8000)  # sofort starten — vor allen Imports die crashen könnten
+
 import time
 import gc
 import network
-from machine import Pin, PWM, Timer, WDT, ADC
+from machine import Pin, PWM, Timer, ADC
 from umqtt.simple import MQTTClient
 import sys
 import os
@@ -10,8 +13,6 @@ import utime
 import pwmfeedback_pio as pwmfeedback
 
 # ==================== KONFIGURATION ====================
-WATCHDOG_ENABLED = True
-WATCHDOG_TIMEOUT = 8000 # ms
 PWM_MIN_HARD = 0       # absolutes Hardware-Minimum (unveränderlich)
 PWM_MAX = 64000
 RAMP_DURATION = 240.0  # Sekunden für sanfte Rampe (4 Minuten)
@@ -67,13 +68,8 @@ sta = network.WLAN(network.STA_IF)
 sta.active(True)
 sta.connect("f24", "9876543210")
 
-# Watchdog Setup
-if WATCHDOG_ENABLED:
-    wdt = WDT(timeout=WATCHDOG_TIMEOUT)
-
 def feed_watchdog():
-    if WATCHDOG_ENABLED and wdt:
-        wdt.feed()
+    wdt.feed()
 
 # ----------------------------------------------------------------------
 ## 🔗 MQTT LOGGING und Hilfsfunktionen

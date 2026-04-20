@@ -117,7 +117,7 @@ def _drain_fifo(t=None):
         x_low  = _sm.get()
         h = (0xFFFFFFFF - x_high) * 2
         l = (0xFFFFFFFF - x_low)  * 2
-        if h > 0 and l > 0:               # Ausreißer (HIGH=0 etc.) verwerfen
+        if h > 0 and l > 0 and (h + l) > 100:
             _high_buf[_buf_idx] = h
             _low_buf[_buf_idx]  = l
             _buf_idx = (_buf_idx + 1) % _BUF_SIZE
@@ -197,7 +197,7 @@ def get_pump_feedback(current_pin_value):
         "PIN5_LOW_us":   low_med,
         "PIN5_Freq_Hz":  freq,
         "PIN5_N":        _buf_count,
-        "DrainMs":       _drain_ms,     # aktuelles Drain-Intervall (Debug)
+        "DrainMs":       _drain_ms,
         "PumpDuty":      round(duty, 2),
         "PumpStatus":    status,
     }
