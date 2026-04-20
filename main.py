@@ -29,8 +29,10 @@ topic_pins      = b'heatp/pins'
 
 FIRMWARE_VERSION = "v2.50-pio-feedback"
 MQTT_TIMEOUT_S = 30  # Reset wenn kein Publish seit 30s
+MQTT_PING_S    = 60  # MQTT-Ping alle 60s im Main-Loop
 start_time = time.time()
 last_publish_time = time.time()
+last_ping_time = time.time()
 
 # ==================== GLOBALE VARIABLEN ====================
 PWM_MIN = 33000        # per MQTT setzbares Minimum (min:VALUE)
@@ -42,7 +44,8 @@ last_boost_start = None  # wird beim ersten publish_all_pins gesetzt
 boost_active = False
 timers = []
 client = None
-_feedback_err_count = 0 # Hysterese: Emergency erst nach 3 Fehlmessungen
+_feedback_err_count    = 0  # Hysterese: Emergency erst nach 3 Fehlmessungen
+_feedback_emergency    = 0  # Zähler: wie oft MAX PWM gesetzt (max 3)
 
 # ==================== HARDWARE & PIN-DEFINITIONEN ====================
 pwm0 = PWM(Pin(0), freq=800)
@@ -105,35 +108,43 @@ def read_adc_voltage(adc):
 def _is_feedback_error(feedback_data):
     duty = feedback_data["PumpDuty"]
     status = feedback_data["PumpStatus"]
-    if duty < 9.0:
-        return True  # TIMEOUT/NO PULSE (duty=0) → ebenfalls MAX PWM
+    if duty < 1.5:
+        return True  # kein Puls / Interface Damaged Low
+    # duty > 97%: nur messen, keine Aktion
     for kw in ("Damaged", "Failure", "Abnormal", "Error Timeout"):
         if kw in status:
             return True
     return False
 
 def publish_all_pins(t):
-    global target_pwm, current_pwm, ramp_start_time, boost_active, _feedback_err_count
+    global target_pwm, current_pwm, ramp_start_time, boost_active, _feedback_err_count, _feedback_emergency
 
     # --- PUMPEN FEEDBACK aus Modul ---
     feedback_data = pwmfeedback.get_pump_feedback(feedback_pin5.value())
 
     # --- FEEDBACK-NOTFALL: erst nach 60s Startup-Grace-Period, 3× bestätigt ---
     uptime = int(time.time() - start_time)
+    # Überdrehzahl: nur loggen, kein Eingriff
+    duty_now = feedback_data["PumpDuty"]
+    if duty_now > 97.0:
+        mqtt_log(f"Überdrehzahl: {duty_now}% – nur Messung, keine Aktion")
+
     if target_pwm > 0 and uptime > 60 and _is_feedback_error(feedback_data):
         _feedback_err_count += 1
-        if _feedback_err_count >= 3:
+        if _feedback_err_count >= 3 and _feedback_emergency < 3:
             target_pwm = PWM_MAX
             current_pwm = PWM_MAX
             ramp_start_time = None
             pwm0.duty_u16(PWM_MAX)
             boost_active = False
             _feedback_err_count = 0
-            mqtt_log(f"NOTFALL: Feedback-Fehler ({feedback_data['PumpStatus']}) → MAX PWM")
+            _feedback_emergency += 1
+            mqtt_log(f"NOTFALL {_feedback_emergency}/3: {feedback_data['PumpStatus']} → MAX PWM")
+        elif _feedback_err_count >= 3:
+            _feedback_err_count = 0
+            mqtt_log(f"Unterdrehzahl: Max-Versuche erreicht, kein Eingriff mehr")
     else:
         _feedback_err_count = 0
-        # Automatische Erholung: wenn NOTFALL target auf MAX gesetzt hat
-        # und Feedback jetzt wieder gesund ist, auf TARGET_PWM zurueckrampen
         if target_pwm == PWM_MAX and not boost_active:
             target_pwm = TARGET_PWM
             ramp_start_time = None
@@ -351,8 +362,14 @@ def mqtt_connect():
 
 def reconnect():
     mqtt_log("MQTT verloren → harter Reset in <8s")
-    time.sleep(9)      # länger als WDT → garantiert Reset
-    while True: pass   # fallback, falls sleep irgendwie überlebt
+    time.sleep(9)
+    while True: pass
+
+def gc_collect(t):
+    try:
+        gc.collect()
+    except:
+        pass
 
 def add_timer(period, callback):
     t = Timer()
@@ -383,15 +400,21 @@ publish_all_pins(None)
 add_timer(200,      update_pwm_ramp)
 add_timer(1000,     boost_cycle)
 add_timer(5000,     publish_all_pins)
-add_timer(240000,   lambda t: client.ping() if client else None)
-add_timer(3600000,  lambda t: (gc.collect(), mqtt_log(f"GC: {gc.mem_free()}")))
+add_timer(300000,   gc_collect)   # GC alle 5min, sicher in Timer-Kontext
 
 while True:
     try:
+        if not sta.isconnected():
+            reconnect()
         if client:
             client.check_msg()
+        now = time.time()
+        # MQTT-Ping im Main-Loop (sicherer als Timer-Callback)
+        if now - last_ping_time > MQTT_PING_S:
+            client.ping()
+            last_ping_time = now
         # Kein Publish seit MQTT_TIMEOUT_S → WDT absichtlich verhungern lassen
-        if time.time() - last_publish_time > MQTT_TIMEOUT_S:
+        if now - last_publish_time > MQTT_TIMEOUT_S:
             mqtt_log("MQTT Timeout → WDT Reset")
             while True: pass
         # LED erloschen obwohl Pumpe laufen soll → Reset
