@@ -1,7 +1,6 @@
 import time
 import gc
 import network
-import socket
 from machine import Pin, PWM, Timer, WDT, ADC
 from umqtt.simple import MQTTClient
 import sys
@@ -29,10 +28,8 @@ topic_pins      = b'heatp/pins'
 
 FIRMWARE_VERSION = "v2.50-pio-feedback"
 MQTT_TIMEOUT_S = 30  # Reset wenn kein Publish seit 30s
-WEBREPL_CHECK_S = 30  # WebREPL-Port alle 30s prüfen
 start_time = time.time()
 last_publish_time = time.time()
-last_webrepl_check = time.time()
 
 # ==================== GLOBALE VARIABLEN ====================
 PWM_MIN = 33000        # per MQTT setzbares Minimum (min:VALUE)
@@ -404,18 +401,6 @@ while True:
         if LED.value() == 0 and target_pwm > 0:
             mqtt_log("WDT: LED erloschen → Reset")
             while True: pass
-        # WebREPL-Port 8266 prüfen: bindbar = WebREPL tot → Reset
-        global last_webrepl_check
-        if time.time() - last_webrepl_check >= WEBREPL_CHECK_S:
-            last_webrepl_check = time.time()
-            _s = socket.socket()
-            try:
-                _s.bind(socket.getaddrinfo('0.0.0.0', 8266)[0][-1])
-                _s.close()
-                mqtt_log("WDT: Port 8266 tot → Reset")
-                while True: pass
-            except OSError:
-                _s.close()  # Port belegt → WebREPL läuft
         feed_watchdog()
     except Exception as e:
         mqtt_log(f"Error: {e}")
