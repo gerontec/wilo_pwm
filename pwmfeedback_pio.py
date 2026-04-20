@@ -164,7 +164,7 @@ def get_pump_feedback(current_pin_value):
         high_med = _median(_high_buf, n)
         low_med  = _median(_low_buf,  n)
         T = high_med + low_med
-        if T > 1000:
+        if T > 100:
             freq  = round(1_000_000.0 / T, 2)
             duty  = round((high_med / T) * 100.0, 2)
             duty  = min(max(duty, 0.0), 100.0)
