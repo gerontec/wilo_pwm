@@ -75,6 +75,12 @@ _last_update_us  = 0
 _error_state_start_ms = 0
 _is_in_error_state    = False
 
+# Dynamische Drain-Anpassung
+FREQ_STABLE_MS   = 1000        # 1s stabile Frequenz vor Drain-Anpassung
+_drain_ms        = DRAIN_INTERVAL_MS
+_freq_ref        = 0.0         # zuletzt bestätigte Basisfrequenz
+_freq_seen_ms    = 0           # Zeitstempel seit wann aktuelle Freq stabil
+
 # ==================== HILFSFUNKTIONEN ====================
 def _get_pump_status(duty):
     for check, status in STATUS_MAP:
@@ -88,6 +94,18 @@ def _median(buf, count):
         return buf[0]
     tmp = sorted(buf[:count])
     return tmp[count // 2]
+
+def _adapt_drain(freq):
+    """Drain-Intervall an Frequenz anpassen: FIFO (4 Words = 2 Zyklen) vor Überlauf leeren."""
+    global _drain_timer, _drain_ms
+    # 1.5 Zyklen Sicherheitsabstand zum FIFO-Überlauf
+    new_ms = max(2, int(1500 / freq))
+    if new_ms == _drain_ms:
+        return
+    _drain_ms = new_ms
+    if _drain_timer:
+        _drain_timer.deinit()
+        _drain_timer.init(period=_drain_ms, mode=Timer.PERIODIC, callback=_drain_fifo)
 
 def _drain_fifo(t=None):
     """FIFO leeren und valide Messungen in Ringpuffer schreiben. Timer-safe."""
@@ -129,7 +147,7 @@ def init_feedback_pin():
 
 def get_pump_feedback(current_pin_value):
     """Gibt Feedback-Dict zurück. Duty/Freq aus Median des Ringpuffers."""
-    global _is_in_error_state, _error_state_start_ms
+    global _is_in_error_state, _error_state_start_ms, _freq_ref, _freq_seen_ms
 
     now_us = utime.ticks_us()
     now_ms = utime.ticks_ms()
@@ -151,6 +169,12 @@ def get_pump_feedback(current_pin_value):
             duty  = round((high_med / T) * 100.0, 2)
             duty  = min(max(duty, 0.0), 100.0)
             status = _get_pump_status(duty)
+            # Dynamische Drain-Anpassung: 1s stabile Frequenz abwarten
+            if abs(freq - _freq_ref) / max(_freq_ref, 1) > 0.10:
+                _freq_ref     = freq     # neue Frequenz → Stabilitätszähler reset
+                _freq_seen_ms = now_ms
+            elif utime.ticks_diff(now_ms, _freq_seen_ms) >= FREQ_STABLE_MS:
+                _adapt_drain(freq)       # 1s stabil → Drain-Intervall anpassen
 
         if ERROR_DUTY_MIN <= duty <= ERROR_DUTY_MAX:
             if not _is_in_error_state:
@@ -172,7 +196,8 @@ def get_pump_feedback(current_pin_value):
         "PIN5_HIGH_us":  high_med,
         "PIN5_LOW_us":   low_med,
         "PIN5_Freq_Hz":  freq,
-        "PIN5_N":        _buf_count,    # Anzahl Messungen im Puffer (Debug)
+        "PIN5_N":        _buf_count,
+        "DrainMs":       _drain_ms,     # aktuelles Drain-Intervall (Debug)
         "PumpDuty":      round(duty, 2),
         "PumpStatus":    status,
     }
