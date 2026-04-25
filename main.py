@@ -49,6 +49,7 @@ _feedback_emergency    = 0  # Zähler: wie oft MAX PWM gesetzt (max 3)
 _pump_duty             = 0.0  # aktueller Duty-Cycle aus Feedback (für Rampe)
 _pump_running          = False  # PIN19: Pumpe extern eingeschaltet
 _ramp_off_attempts     = 0     # max 2 PWM-Erhöhungen wenn PIN19=0
+_ramp_off_last_t       = 0     # Zeitpunkt letzter Erhöhung bei PIN19=0
 
 # ==================== HARDWARE & PIN-DEFINITIONEN ====================
 pwm0 = PWM(Pin(0), freq=800)
@@ -258,7 +259,7 @@ def update_pwm_ramp(t):
             pwm0.duty_u16(0)
         return
 
-    global _ramp_off_attempts
+    global _ramp_off_attempts, _ramp_off_last_t
     duty = _pump_duty
     new_pwm = current_pwm
 
@@ -268,9 +269,10 @@ def update_pwm_ramp(t):
             new_pwm = min(PWM_MAX, current_pwm + FEEDBACK_STEP)
         elif duty > 20.0:
             new_pwm = max(max(PWM_MIN_HARD, PWM_MIN), current_pwm - FEEDBACK_STEP)
-    elif duty < 5.0 and _ramp_off_attempts < 2:
+    elif duty < 5.0 and _ramp_off_attempts < 2 and time.time() - _ramp_off_last_t >= 5:
         new_pwm = min(PWM_MAX, current_pwm + FEEDBACK_STEP)
         _ramp_off_attempts += 1
+        _ramp_off_last_t = time.time()
 
     if new_pwm != current_pwm:
         current_pwm = new_pwm
