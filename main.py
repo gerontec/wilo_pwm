@@ -218,7 +218,7 @@ def publish_all_pins(t):
 ## ⏱️ Steuerung und MQTT-Logik
 # ----------------------------------------------------------------------
 
-FEEDBACK_STEP = 400  # PWM-Einheiten pro 200ms-Tick (~2000/s)
+FEEDBACK_STEP_DOWN = 200  # PWM-Einheiten pro 200ms-Tick beim Reduzieren
 
 def update_pwm_ramp(t):
     global current_pwm, target_pwm, _ramp_low_attempts, _ramp_low_last_t
@@ -233,14 +233,14 @@ def update_pwm_ramp(t):
 
     if duty < 5.0:
         if _ramp_low_attempts < 2 and time.time() - _ramp_low_last_t >= 5:
-            new_pwm = min(PWM_MAX, current_pwm + FEEDBACK_STEP)
+            new_pwm = PWM_MAX  # sofort auf MAX
             _ramp_low_attempts += 1
             _ramp_low_last_t = time.time()
     elif duty > 20.0:
         _ramp_low_attempts = 0
-        new_pwm = max(PWM_MIN_HARD, current_pwm - FEEDBACK_STEP)
+        new_pwm = max(PWM_MIN_HARD, current_pwm - FEEDBACK_STEP_DOWN)
     else:
-        _ramp_low_attempts = 0  # 5-20%: Regelziel erreicht, Zähler reset
+        _ramp_low_attempts = 0
 
     if new_pwm != current_pwm:
         current_pwm = new_pwm
