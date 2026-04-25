@@ -236,7 +236,7 @@ def update_pwm_ramp(t):
             new_pwm = PWM_MAX  # sofort auf MAX
             _ramp_low_attempts += 1
             _ramp_low_last_t = time.time()
-    elif duty > 20.0:
+    elif duty > 25.0:
         _ramp_low_attempts = 0
         new_pwm = max(PWM_MIN_HARD, current_pwm - FEEDBACK_STEP_DOWN)
     else:
