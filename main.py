@@ -10,7 +10,7 @@ import sys
 import os
 import ujson
 import utime
-import pwmfeedback_pio as pwmfeedback
+import pwmfeedback
 
 # ==================== KONFIGURATION ====================
 PWM_MIN_HARD = 0       # absolutes Hardware-Minimum (unveränderlich)
@@ -46,6 +46,7 @@ timers = []
 client = None
 _feedback_err_count    = 0  # Hysterese: Emergency erst nach 3 Fehlmessungen
 _feedback_emergency    = 0  # Zähler: wie oft MAX PWM gesetzt (max 3)
+_pump_duty             = 0.0  # aktueller Duty-Cycle aus Feedback (für Rampe)
 
 # ==================== HARDWARE & PIN-DEFINITIONEN ====================
 pwm0 = PWM(Pin(0), freq=800)
@@ -117,10 +118,11 @@ def _is_feedback_error(feedback_data):
     return False
 
 def publish_all_pins(t):
-    global target_pwm, current_pwm, ramp_start_time, boost_active, _feedback_err_count, _feedback_emergency
+    global target_pwm, current_pwm, ramp_start_time, boost_active, _feedback_err_count, _feedback_emergency, _pump_duty
 
     # --- PUMPEN FEEDBACK aus Modul ---
     feedback_data = pwmfeedback.get_pump_feedback(feedback_pin5.value())
+    _pump_duty = feedback_data["PumpDuty"]
 
     # --- FEEDBACK-NOTFALL: erst nach 60s Startup-Grace-Period, 3× bestätigt ---
     uptime = int(time.time() - start_time)
@@ -243,25 +245,23 @@ def publish_all_pins(t):
 ## ⏱️ Steuerung und MQTT-Logik
 # ----------------------------------------------------------------------
 
-def update_pwm_ramp(t):
-    global current_pwm, target_pwm, ramp_start_time, ramp_start_value
-    if ramp_start_time is None:
-        if current_pwm == target_pwm:
-            pwm0.duty_u16(current_pwm)
-            return
-        ramp_start_time = time.time()
-        ramp_start_value = current_pwm
+FEEDBACK_STEP = 400  # PWM-Einheiten pro 200ms-Tick (~2000/s)
 
-    elapsed = time.time() - ramp_start_time
-    if elapsed >= RAMP_DURATION:
-        current_pwm = target_pwm
-        ramp_start_time = None
-        pwm0.duty_u16(current_pwm)
+def update_pwm_ramp(t):
+    global current_pwm, target_pwm
+    if target_pwm == 0:
+        if current_pwm != 0:
+            current_pwm = 0
+            pwm0.duty_u16(0)
         return
 
-    progress = elapsed / RAMP_DURATION
-    new_pwm = int(ramp_start_value + (target_pwm - ramp_start_value) * progress)
-    new_pwm = max(max(PWM_MIN_HARD, PWM_MIN), min(PWM_MAX, new_pwm))
+    duty = _pump_duty
+    new_pwm = current_pwm
+
+    if duty < 5.0:
+        new_pwm = min(PWM_MAX, current_pwm + FEEDBACK_STEP)
+    elif duty > 20.0:
+        new_pwm = max(max(PWM_MIN_HARD, PWM_MIN), current_pwm - FEEDBACK_STEP)
 
     if new_pwm != current_pwm:
         current_pwm = new_pwm
@@ -390,8 +390,6 @@ wlan_wait = 0
 while not sta.isconnected():
     utime.sleep_ms(100)
     wlan_wait += 1
-    if wlan_wait % 20 == 0:  # alle 2s WDT füttern solange noch kein WLAN
-        feed_watchdog()
     if wlan_wait >= 70:      # nach 7s aufhören → WDT resetet in <1s
         break
 
