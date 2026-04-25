@@ -47,6 +47,7 @@ client = None
 _feedback_err_count    = 0  # Hysterese: Emergency erst nach 3 Fehlmessungen
 _feedback_emergency    = 0  # Zähler: wie oft MAX PWM gesetzt (max 3)
 _pump_duty             = 0.0  # aktueller Duty-Cycle aus Feedback (für Rampe)
+_pump_running          = False  # PIN19: Pumpe extern eingeschaltet
 
 # ==================== HARDWARE & PIN-DEFINITIONEN ====================
 pwm0 = PWM(Pin(0), freq=800)
@@ -118,11 +119,12 @@ def _is_feedback_error(feedback_data):
     return False
 
 def publish_all_pins(t):
-    global target_pwm, current_pwm, ramp_start_time, boost_active, _feedback_err_count, _feedback_emergency, _pump_duty
+    global target_pwm, current_pwm, ramp_start_time, boost_active, _feedback_err_count, _feedback_emergency, _pump_duty, _pump_running
 
     # --- PUMPEN FEEDBACK aus Modul ---
     feedback_data = pwmfeedback.get_pump_feedback(feedback_pin5.value())
     _pump_duty = feedback_data["PumpDuty"]
+    _pump_running = pump_feedback_pin19.value() == 1
 
     # --- FEEDBACK-NOTFALL: erst nach 60s Startup-Grace-Period, 3× bestätigt ---
     uptime = int(time.time() - start_time)
@@ -258,7 +260,9 @@ def update_pwm_ramp(t):
     duty = _pump_duty
     new_pwm = current_pwm
 
-    if duty < 5.0:
+    if not _pump_running:
+        pass  # extern aus → PWM nicht verändern
+    elif duty < 5.0:
         new_pwm = min(PWM_MAX, current_pwm + FEEDBACK_STEP)
     elif duty > 20.0:
         new_pwm = max(max(PWM_MIN_HARD, PWM_MIN), current_pwm - FEEDBACK_STEP)
