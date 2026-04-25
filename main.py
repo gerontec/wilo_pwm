@@ -35,7 +35,6 @@ last_publish_time = time.time()
 last_ping_time = time.time()
 
 # ==================== GLOBALE VARIABLEN ====================
-PWM_MIN = 33000        # per MQTT setzbares Minimum (min:VALUE)
 current_pwm = PWM_MAX   # Hardware startet auf MAX (Sicherheit)
 target_pwm = TARGET_PWM  # Ziel: sofort rampen auf Normalbetrieb
 ramp_start_time = None
@@ -180,7 +179,6 @@ def publish_all_pins(t):
             "WLAN": wlan_status,
             "LED": LED.value(),
             "PWM": current_pwm,
-            "PWM_MIN": PWM_MIN,
             "PIN0": current_pwm,
             "PIN1": test_pin1.value(),
             "PIN7": feedback_pin7.value(),
@@ -267,7 +265,7 @@ def update_pwm_ramp(t):
             _ramp_low_last_t = time.time()
     elif duty > 20.0:
         _ramp_low_attempts = 0
-        new_pwm = max(max(PWM_MIN_HARD, PWM_MIN), current_pwm - FEEDBACK_STEP)
+        new_pwm = max(PWM_MIN_HARD, current_pwm - FEEDBACK_STEP)
     else:
         _ramp_low_attempts = 0  # 5-20%: Regelziel erreicht, Zähler reset
 
@@ -299,7 +297,7 @@ def boost_cycle(t):
         boost_active = False
 
 def sub_cb(topic, msg):
-    global target_pwm, TARGET_PWM, PWM_MIN, ramp_start_time, last_boost_start, boost_active, current_pwm
+    global target_pwm, TARGET_PWM, ramp_start_time, last_boost_start, boost_active, current_pwm
     try:
         if topic == topic_sub_pump:
             cmd = msg.decode().strip().lower()
@@ -326,7 +324,7 @@ def sub_cb(topic, msg):
                 mqtt_log("Auto reaktiviert")
             elif cmd.isdigit():
                 val = int(cmd)
-                TARGET_PWM = max(PWM_MIN, val) if val > 0 else 0
+                TARGET_PWM = val
                 target_pwm = TARGET_PWM
                 ramp_start_time = None
                 if target_pwm > 0:
@@ -342,10 +340,6 @@ def sub_cb(topic, msg):
                 boost_active = False
                 LED.on()
                 mqtt_log("Manuell → 100%")
-            elif cmd.startswith("min:"):
-                val = int(cmd[4:])
-                PWM_MIN = max(0, min(PWM_MAX, val))
-                mqtt_log(f"PWM_MIN gesetzt → {PWM_MIN}")
             elif cmd == "la":
                 mqtt_log("LA: Logic Analyzer startet...")
                 try:
