@@ -15,9 +15,6 @@ import pwmfeedback
 # ==================== KONFIGURATION ====================
 PWM_MIN_HARD = 0       # absolutes Hardware-Minimum (unveränderlich)
 PWM_MAX = 64000
-RAMP_DURATION = 240.0  # Sekunden für sanfte Rampe (4 Minuten)
-
-TARGET_PWM = 33000
 INTERVAL_SECONDS = 900 # 15 Minuten
 BOOST_DURATION = 5 # 5 Sekunden
 
@@ -27,7 +24,7 @@ topic_sub_pump  = b'heatp/pump'
 topic_pub       = b'heatp/pico120'
 topic_pins      = b'heatp/pins'
 
-FIRMWARE_VERSION = "v2.50-pio-feedback"
+FIRMWARE_VERSION = "v2.68"
 MQTT_TIMEOUT_S = 30  # Reset wenn kein Publish seit 30s
 MQTT_PING_S    = 60  # MQTT-Ping alle 60s im Main-Loop
 start_time = time.time()
@@ -36,9 +33,7 @@ last_ping_time = time.time()
 
 # ==================== GLOBALE VARIABLEN ====================
 current_pwm = PWM_MAX   # Hardware startet auf MAX (Sicherheit)
-target_pwm = TARGET_PWM  # Ziel: sofort rampen auf Normalbetrieb
-ramp_start_time = None
-ramp_start_value = None
+target_pwm = PWM_MAX    # >0 = ein, 0 = aus; Feedback regelt current_pwm
 last_boost_start = None  # wird beim ersten publish_all_pins gesetzt
 boost_active = False
 timers = []
@@ -108,18 +103,14 @@ def read_adc_voltage(adc):
 # ----------------------------------------------------------------------
 
 def _is_feedback_error(feedback_data):
-    duty = feedback_data["PumpDuty"]
     status = feedback_data["PumpStatus"]
-    if duty < 1.5:
-        return True  # kein Puls / Interface Damaged Low
-    # duty > 97%: nur messen, keine Aktion
     for kw in ("Damaged", "Failure", "Abnormal", "Error Timeout"):
         if kw in status:
             return True
     return False
 
 def publish_all_pins(t):
-    global target_pwm, current_pwm, ramp_start_time, boost_active, _feedback_err_count, _feedback_emergency, _pump_duty
+    global target_pwm, current_pwm, boost_active, _feedback_err_count, _feedback_emergency, _pump_duty
 
     # --- PUMPEN FEEDBACK aus Modul ---
     feedback_data = pwmfeedback.get_pump_feedback(feedback_pin5.value())
@@ -127,18 +118,13 @@ def publish_all_pins(t):
 
     # --- FEEDBACK-NOTFALL: erst nach 60s Startup-Grace-Period, 3× bestätigt ---
     uptime = int(time.time() - start_time)
-    # Überdrehzahl: nur loggen, kein Eingriff
-    duty_now = feedback_data["PumpDuty"]
-    if duty_now > 97.0:
-        mqtt_log(f"Überdrehzahl: {duty_now}% – nur Messung")
+    if _pump_duty > 97.0:
+        mqtt_log(f"Überdrehzahl: {_pump_duty}% – nur Messung")
 
-    pump_running = pump_feedback_pin19.value() == 1
-    if target_pwm > 0 and uptime > 60 and pump_running and _is_feedback_error(feedback_data):
+    if target_pwm > 0 and uptime > 60 and _is_feedback_error(feedback_data):
         _feedback_err_count += 1
         if _feedback_err_count >= 3 and _feedback_emergency < 3:
-            target_pwm = PWM_MAX
             current_pwm = PWM_MAX
-            ramp_start_time = None
             pwm0.duty_u16(PWM_MAX)
             boost_active = False
             _feedback_err_count = 0
@@ -148,15 +134,9 @@ def publish_all_pins(t):
             _feedback_err_count = 0
     else:
         _feedback_err_count = 0
-        # Emergency-Zähler zurücksetzen wenn Pumpe wieder normal läuft
-        if pump_running and _feedback_emergency > 0 and not _is_feedback_error(feedback_data):
+        if _feedback_emergency > 0 and not _is_feedback_error(feedback_data):
             _feedback_emergency = 0
-        if target_pwm == PWM_MAX and not boost_active:
-            target_pwm = TARGET_PWM
-            ramp_start_time = None
-            mqtt_log(f"Feedback OK → Rampe zurueck auf {TARGET_PWM}")
-
-    # --- ENDE PWM BERECHNUNG ---
+            mqtt_log("Feedback OK → Regler übernimmt")
 
     try:
         ip = sta.ifconfig()[0] if sta.isconnected() else "0.0.0.0"
@@ -191,13 +171,6 @@ def publish_all_pins(t):
             "PIN5_Freq_Hz": feedback_data["PIN5_Freq_Hz"],
             "PumpDuty": feedback_data["PumpDuty"],
             "PumpStatus": feedback_data["PumpStatus"],
-            # Diagnose-Felder (nur im Test-Modul vorhanden, sonst ignoriert)
-            "PIO_MHz":      feedback_data.get("PIO_MHz", 1),
-            "PIO_Total":    feedback_data.get("PIO_Total", 0),
-            "PIO_Valid":    feedback_data.get("PIO_Valid", 0),
-            "PIO_Glitch":   feedback_data.get("PIO_Glitch", 0),
-            "PIO_ValidPct": feedback_data.get("PIO_ValidPct", 0.0),
-            "DrainMs":      feedback_data.get("DrainMs", 0),
 
             "PIN19": pump_feedback_pin19.value(),
             "PumpFeedback": pump_feedback_pin19.value(),
@@ -274,30 +247,24 @@ def update_pwm_ramp(t):
         pwm0.duty_u16(current_pwm)
 
 def boost_cycle(t):
-    global target_pwm, TARGET_PWM, ramp_start_time, last_boost_start, boost_active, current_pwm
+    global last_boost_start, boost_active, current_pwm
     now = time.time()
     if last_boost_start is None:
         last_boost_start = now  # Startzeitpunkt initialisieren — verhindert Sofort-Boost
     if not boost_active and now - last_boost_start >= INTERVAL_SECONDS:
-        # BOOST START
         mqtt_log("15-Min-Boost: 5s auf 100%")
-        target_pwm = PWM_MAX
-        ramp_start_time = None
         pwm0.duty_u16(PWM_MAX)
-        current_pwm = PWM_MAX # <--- FIX: current_pwm synchronisieren
+        current_pwm = PWM_MAX
         LED.on()
         last_boost_start = now
         boost_active = True
 
     if boost_active and now - last_boost_start >= BOOST_DURATION:
-        # BOOST ENDE
-        mqtt_log(f"Boost Ende → 4min Rampe auf {TARGET_PWM}")
-        target_pwm = TARGET_PWM
-        ramp_start_time = None
+        mqtt_log("Boost Ende → Feedback übernimmt")
         boost_active = False
 
 def sub_cb(topic, msg):
-    global target_pwm, TARGET_PWM, ramp_start_time, last_boost_start, boost_active, current_pwm
+    global target_pwm, last_boost_start, boost_active, current_pwm
     try:
         if topic == topic_sub_pump:
             cmd = msg.decode().strip().lower()
@@ -324,9 +291,7 @@ def sub_cb(topic, msg):
                 mqtt_log("Auto reaktiviert")
             elif cmd.isdigit():
                 val = int(cmd)
-                TARGET_PWM = val
-                target_pwm = TARGET_PWM
-                ramp_start_time = None
+                target_pwm = val
                 if target_pwm > 0:
                     LED.on()
                 else:
@@ -334,9 +299,8 @@ def sub_cb(topic, msg):
                 mqtt_log(f"Manuell → {val}")
             elif cmd == "on":
                 target_pwm = PWM_MAX
-                ramp_start_time = None
-                pwm0.duty_u16(PWM_MAX) # Hardware direkt setzen
-                current_pwm = PWM_MAX # <--- FIX: current_pwm synchronisieren
+                current_pwm = PWM_MAX
+                pwm0.duty_u16(PWM_MAX)
                 boost_active = False
                 LED.on()
                 mqtt_log("Manuell → 100%")
