@@ -47,9 +47,8 @@ client = None
 _feedback_err_count    = 0  # Hysterese: Emergency erst nach 3 Fehlmessungen
 _feedback_emergency    = 0  # Zähler: wie oft MAX PWM gesetzt (max 3)
 _pump_duty             = 0.0  # aktueller Duty-Cycle aus Feedback (für Rampe)
-_pump_running          = False  # PIN19: Pumpe extern eingeschaltet
-_ramp_off_attempts     = 0     # max 2 PWM-Erhöhungen wenn PIN19=0
-_ramp_off_last_t       = 0     # Zeitpunkt letzter Erhöhung bei PIN19=0
+_ramp_low_attempts     = 0    # max 2 PWM-Erhöhungen bei duty<5%, dann Stopp
+_ramp_low_last_t       = 0    # Zeitpunkt letzter Erhöhung bei duty<5%
 
 # ==================== HARDWARE & PIN-DEFINITIONEN ====================
 pwm0 = PWM(Pin(0), freq=800)
@@ -121,12 +120,11 @@ def _is_feedback_error(feedback_data):
     return False
 
 def publish_all_pins(t):
-    global target_pwm, current_pwm, ramp_start_time, boost_active, _feedback_err_count, _feedback_emergency, _pump_duty, _pump_running
+    global target_pwm, current_pwm, ramp_start_time, boost_active, _feedback_err_count, _feedback_emergency, _pump_duty
 
     # --- PUMPEN FEEDBACK aus Modul ---
     feedback_data = pwmfeedback.get_pump_feedback(feedback_pin5.value())
     _pump_duty = feedback_data["PumpDuty"]
-    _pump_running = pump_feedback_pin19.value() == 1
 
     # --- FEEDBACK-NOTFALL: erst nach 60s Startup-Grace-Period, 3× bestätigt ---
     uptime = int(time.time() - start_time)
@@ -252,27 +250,26 @@ def publish_all_pins(t):
 FEEDBACK_STEP = 400  # PWM-Einheiten pro 200ms-Tick (~2000/s)
 
 def update_pwm_ramp(t):
-    global current_pwm, target_pwm
+    global current_pwm, target_pwm, _ramp_low_attempts, _ramp_low_last_t
     if target_pwm == 0:
         if current_pwm != 0:
             current_pwm = 0
             pwm0.duty_u16(0)
         return
 
-    global _ramp_off_attempts, _ramp_off_last_t
     duty = _pump_duty
     new_pwm = current_pwm
 
-    if _pump_running:
-        _ramp_off_attempts = 0
-        if duty < 5.0:
+    if duty < 5.0:
+        if _ramp_low_attempts < 2 and time.time() - _ramp_low_last_t >= 5:
             new_pwm = min(PWM_MAX, current_pwm + FEEDBACK_STEP)
-        elif duty > 20.0:
-            new_pwm = max(max(PWM_MIN_HARD, PWM_MIN), current_pwm - FEEDBACK_STEP)
-    elif duty < 5.0 and _ramp_off_attempts < 2 and time.time() - _ramp_off_last_t >= 5:
-        new_pwm = min(PWM_MAX, current_pwm + FEEDBACK_STEP)
-        _ramp_off_attempts += 1
-        _ramp_off_last_t = time.time()
+            _ramp_low_attempts += 1
+            _ramp_low_last_t = time.time()
+    elif duty > 20.0:
+        _ramp_low_attempts = 0
+        new_pwm = max(max(PWM_MIN_HARD, PWM_MIN), current_pwm - FEEDBACK_STEP)
+    else:
+        _ramp_low_attempts = 0  # 5-20%: Regelziel erreicht, Zähler reset
 
     if new_pwm != current_pwm:
         current_pwm = new_pwm
