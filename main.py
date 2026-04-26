@@ -24,7 +24,7 @@ topic_sub_pump  = b'heatp/pump'
 topic_pub       = b'heatp/pico120'
 topic_pins      = b'heatp/pins'
 
-FIRMWARE_VERSION = "v2.68"
+FIRMWARE_VERSION = "v2.71"
 MQTT_TIMEOUT_S = 30  # Reset wenn kein Publish seit 30s
 MQTT_PING_S    = 60  # MQTT-Ping alle 60s im Main-Loop
 start_time = time.time()
@@ -104,7 +104,7 @@ def read_adc_voltage(adc):
 
 def _is_feedback_error(feedback_data):
     status = feedback_data["PumpStatus"]
-    for kw in ("Damaged", "Failure", "Abnormal", "Error Timeout"):
+    for kw in ("Damaged", "Failure", "Error Timeout"):
         if kw in status:
             return True
     return False
@@ -116,11 +116,18 @@ def publish_all_pins(t):
     feedback_data = pwmfeedback.get_pump_feedback(feedback_pin5.value())
     _pump_duty = feedback_data["PumpDuty"]
 
-    # --- FEEDBACK-NOTFALL: erst nach 60s Startup-Grace-Period, 3× bestätigt ---
     uptime = int(time.time() - start_time)
     if _pump_duty > 97.0:
         mqtt_log(f"Überdrehzahl: {_pump_duty}% – nur Messung")
 
+    # --- Abnormal Running Mode: kein WDT, direkt PWM_MAX ---
+    if target_pwm > 0 and "Abnormal Running Mode" in feedback_data["PumpStatus"]:
+        if current_pwm != PWM_MAX:
+            current_pwm = PWM_MAX
+            pwm0.duty_u16(PWM_MAX)
+            mqtt_log(f"Abnormal Running → PWM_MAX")
+
+    # --- FEEDBACK-NOTFALL: erst nach 60s Startup-Grace-Period, 3× bestätigt ---
     if target_pwm > 0 and uptime > 60 and _is_feedback_error(feedback_data):
         _feedback_err_count += 1
         if _feedback_err_count >= 3 and _feedback_emergency < 3:
