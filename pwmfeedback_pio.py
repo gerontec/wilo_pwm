@@ -1,4 +1,4 @@
-# pwmfeedback_pio.py – v2.61-drain – Drain 10ms < Zyklusperiode, kein FIFO-Overflow
+# pwmfeedback_pio.py – v2.62-drain50 – Drain auf T/2 (50% Zyklusperiode), 100% Puffer
 # Drop-in-Ersatz für pwmfeedback.py — gleiche API, kein IRQ-Overhead
 #
 # Messprinzip: PIO State Machine misst HIGH- und LOW-Zeit cycle-genau.
@@ -18,7 +18,7 @@ from machine import Pin, Timer
 # ==================== KONFIGURATION ====================
 PIN_FEEDBACK     = 5
 TACHO_TIMEOUT_MS = 2000   # Kein gültiger Wert seit 2s → TIMEOUT
-DRAIN_INTERVAL_MS = 10    # < Zyklusperiode (13.3ms@75Hz) → FIFO max 1 Zyklus, kein Overflow
+DRAIN_INTERVAL_MS = 6     # 50% Zyklusperiode@75Hz (T/2=6.6ms) — 100% Sicherheitspuffer
 _BUF_SIZE        = 30     # Ringpuffer: ~400ms Datenfenster @ 75 Hz
 
 ERROR_TIMEOUT_S  = 15
@@ -99,7 +99,7 @@ def _adapt_drain(freq):
     """Drain-Intervall an Frequenz anpassen: FIFO (4 Words = 2 Zyklen) vor Überlauf leeren."""
     global _drain_timer, _drain_ms
     # 1.5 Zyklen Sicherheitsabstand zum FIFO-Überlauf
-    new_ms = max(2, int(900 / freq))   # < 1 Zyklusperiode: FIFO max 1 Zyklus tief
+    new_ms = max(2, int(450 / freq))   # 50% Zyklusperiode → 100% Sicherheitspuffer
     if new_ms == _drain_ms:
         return
     _drain_ms = new_ms
