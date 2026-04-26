@@ -1,4 +1,4 @@
-# pwmfeedback_pio.py – v2.62-drain50 – Drain auf T/2 (50% Zyklusperiode), 100% Puffer
+# pwmfeedback_pio.py – v2.63-push-block – push() statt push(noblock): kein Desync möglich
 # Drop-in-Ersatz für pwmfeedback.py — gleiche API, kein IRQ-Overhead
 #
 # Messprinzip: PIO State Machine misst HIGH- und LOW-Zeit cycle-genau.
@@ -54,14 +54,14 @@ def _pwm_measure():
     jmp(x_dec, "high_loop")
     label("high_done")
     mov(isr, x)
-    push(noblock)
+    push()           # blockierend: stalliert wenn FIFO voll → kein Word-Drop möglich
     mov(x, y)
     label("low_loop")
     jmp(pin, "low_done")
     jmp(x_dec, "low_loop")
     label("low_done")
     mov(isr, x)
-    push(noblock)
+    push()           # blockierend: HIGH+LOW immer als vollständiges Paar im FIFO
     wrap()
 
 # ==================== RINGPUFFER & ZUSTAND ====================
