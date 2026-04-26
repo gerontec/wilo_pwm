@@ -10,7 +10,7 @@ import sys
 import os
 import ujson
 import utime
-import pwmfeedback
+import pwmfeedback_pio as pwmfeedback
 
 # ==================== KONFIGURATION ====================
 PWM_MIN_HARD = 0       # absolutes Hardware-Minimum (unveränderlich)
@@ -24,7 +24,7 @@ topic_sub_pump  = b'heatp/pump'
 topic_pub       = b'heatp/pico120'
 topic_pins      = b'heatp/pins'
 
-FIRMWARE_VERSION = "v2.73"
+FIRMWARE_VERSION = "v2.74"
 MQTT_TIMEOUT_S = 30  # Reset wenn kein Publish seit 30s
 MQTT_PING_S    = 60  # MQTT-Ping alle 60s im Main-Loop
 start_time = time.time()
