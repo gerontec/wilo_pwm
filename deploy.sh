@@ -54,7 +54,6 @@ import sys, json
 d = json.load(sys.stdin)
 print(f'  FW:      {d[\"FW\"]}')
 print(f'  UPTIME:  {d[\"UPTIME\"]}s')
-print(f'  PWM_MIN: {d[\"PWM_MIN\"]}')
 print(f'  Duty:    {d[\"PumpDuty\"]}%')
 print(f'  Status:  {d[\"PumpStatus\"]}')
 "
