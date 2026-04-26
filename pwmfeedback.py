@@ -1,4 +1,4 @@
-# pwmfeedback.py – v2.30-real-duty – Duty gegen echte Periode berechnet
+# pwmfeedback.py – v2.31-toggle-irq – IRQ-Swap-Fix: Toggle statt pin.value()
 # Duty = HIGH / T  (nicht mehr gegen NOMINAL 75Hz)
 # → Fehlercodes werden bei jeder Pumpenfrequenz korrekt erkannt
 
@@ -26,35 +26,36 @@ STATUS_MAP = [
 ]
 
 # ==================== GLOBALE VARIABLEN ====================
-last_any_flank_us = utime.ticks_us()      # ← NEU: Zeit zwischen JEGLICHEN Flanken
+last_any_flank_us = utime.ticks_us()
 last_pin5_time_us = utime.ticks_us()
 pin5_high_time_us = 0
 pin5_low_time_us = 0
 pin5_flank_time_us = 0
 last_pulse_time_us = utime.ticks_us()
+_next_edge_is_rising = True  # Toggle-State: kein pin.value() mehr im IRQ
 
 error_state_start_time = 0
 is_in_error_state = False
 
-# ==================== IRQ – jetzt noch robuster ====================
+# ==================== IRQ ====================
 def pin5_callback(pin):
     global last_pin5_time_us, pin5_flank_time_us, pin5_high_time_us, pin5_low_time_us
-    global last_pulse_time_us, last_any_flank_us
+    global last_pulse_time_us, last_any_flank_us, _next_edge_is_rising
 
     now = utime.ticks_us()
     diff = utime.ticks_diff(now, last_pin5_time_us)
 
     if diff > MIN_PULSE_WIDTH_US:
-        if pin.value() == 1:
-            pin5_low_time_us = diff
+        if _next_edge_is_rising:
+            pin5_low_time_us = diff   # steigende Flanke = LOW-Phase beendet
         else:
-            pin5_high_time_us = diff
+            pin5_high_time_us = diff  # fallende Flanke = HIGH-Phase beendet
+        _next_edge_is_rising = not _next_edge_is_rising
         pin5_flank_time_us = diff
         last_pin5_time_us = now
 
-    # Diese beiden Zeilen sind der entscheidende Trick:
-    last_pulse_time_us = now          # für Timeout
-    last_any_flank_us = now           # für exakte Frequenzmessung (auch bei 99,9% Duty!)
+    last_pulse_time_us = now
+    last_any_flank_us = now
 
 # ==================== STATUS-LOGIK ====================
 def get_pump_status(duty_cycle):
@@ -65,7 +66,9 @@ def get_pump_status(duty_cycle):
 
 # ==================== INITIALISIERUNG ====================
 def init_feedback_pin():
+    global _next_edge_is_rising
     feedback_pin = Pin(PIN_FEEDBACK, Pin.IN, Pin.PULL_UP)
+    _next_edge_is_rising = (feedback_pin.value() == 0)  # LOW jetzt → nächste Flanke ist steigend
     feedback_pin.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=pin5_callback, hard=True)
     return feedback_pin
 
