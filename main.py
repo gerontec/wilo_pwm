@@ -24,7 +24,7 @@ topic_sub_pump  = b'heatp/pump'
 topic_pub       = b'heatp/pico120'
 topic_pins      = b'heatp/pins'
 
-FIRMWARE_VERSION = "v2.79"
+FIRMWARE_VERSION = "v2.80"
 MQTT_TIMEOUT_S = 30  # Reset wenn kein Publish seit 30s
 MQTT_PING_S    = 60  # MQTT-Ping alle 60s im Main-Loop
 start_time = time.time()
@@ -177,6 +177,9 @@ def publish_all_pins(t):
             "PIN5_HIGH_us": feedback_data["PIN5_HIGH_us"],
             "PIN5_LOW_us": feedback_data["PIN5_LOW_us"],
             "PIN5_Freq_Hz": feedback_data["PIN5_Freq_Hz"],
+            "PIN5_N": feedback_data.get("PIN5_N", 0),
+            "DrainMs": feedback_data.get("DrainMs", 0),
+            "DiscardPct": feedback_data.get("DiscardPct", 0.0),
             "PumpDuty": feedback_data["PumpDuty"],
             "PumpStatus": feedback_data["PumpStatus"],
 
