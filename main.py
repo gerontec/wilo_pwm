@@ -24,7 +24,7 @@ topic_sub_pump  = b'heatp/pump'
 topic_pub       = b'heatp/pico120'
 topic_pins      = b'heatp/pins'
 
-FIRMWARE_VERSION = "v2.77"
+FIRMWARE_VERSION = "v2.78"
 MQTT_TIMEOUT_S = 30  # Reset wenn kein Publish seit 30s
 MQTT_PING_S    = 60  # MQTT-Ping alle 60s im Main-Loop
 start_time = time.time()
@@ -43,6 +43,7 @@ _feedback_emergency    = 0  # Zähler: wie oft MAX PWM gesetzt (max 3)
 _pump_duty             = 0.0  # aktueller Duty-Cycle aus Feedback (für Rampe)
 _ramp_low_attempts     = 0    # max 2 PWM-Erhöhungen bei duty<5%, dann Stopp
 _ramp_low_last_t       = 0    # Zeitpunkt letzter Erhöhung bei duty<5%
+_manual_lock           = False  # fix-Modus: Regelung + Boost deaktiviert
 
 # ==================== HARDWARE & PIN-DEFINITIONEN ====================
 pwm0 = PWM(Pin(0), freq=800)
@@ -120,8 +121,8 @@ def publish_all_pins(t):
     if _pump_duty > 97.0:
         mqtt_log(f"Überdrehzahl: {_pump_duty}% – nur Messung")
 
-    # --- Abnormal Running Mode: kein WDT, direkt PWM_MAX ---
-    if target_pwm > 0 and "Abnormal Running Mode" in feedback_data["PumpStatus"]:
+    # --- Abnormal Running Mode: kein WDT, direkt PWM_MAX (nicht im Fix-Modus) ---
+    if target_pwm > 0 and not _manual_lock and "Abnormal Running Mode" in feedback_data["PumpStatus"]:
         if current_pwm != PWM_MAX:
             current_pwm = PWM_MAX
             pwm0.duty_u16(PWM_MAX)
@@ -229,6 +230,8 @@ FEEDBACK_STEP_DOWN = 200  # PWM-Einheiten pro 200ms-Tick beim Reduzieren
 
 def update_pwm_ramp(t):
     global current_pwm, target_pwm, _ramp_low_attempts, _ramp_low_last_t
+    if _manual_lock:
+        return
     if target_pwm == 0:
         if current_pwm != 0:
             current_pwm = 0
@@ -255,6 +258,8 @@ def update_pwm_ramp(t):
 
 def boost_cycle(t):
     global last_boost_start, boost_active, current_pwm
+    if _manual_lock:
+        return
     now = time.time()
     if last_boost_start is None:
         last_boost_start = now  # Startzeitpunkt initialisieren — verhindert Sofort-Boost
@@ -271,7 +276,7 @@ def boost_cycle(t):
         boost_active = False
 
 def sub_cb(topic, msg):
-    global target_pwm, last_boost_start, boost_active, current_pwm
+    global target_pwm, last_boost_start, boost_active, current_pwm, _manual_lock
     try:
         if topic == topic_sub_pump:
             cmd = msg.decode().strip().lower()
@@ -292,6 +297,7 @@ def sub_cb(topic, msg):
             if cmd == "off":
                 mqtt_log("off ignoriert – nur reset erlaubt")
             elif cmd in ("auto", ""):
+                _manual_lock = False
                 boost_active = True
                 last_boost_start = time.time() - INTERVAL_SECONDS + 10
                 LED.on()
@@ -311,6 +317,18 @@ def sub_cb(topic, msg):
                 boost_active = False
                 LED.on()
                 mqtt_log("Manuell → 100%")
+            elif cmd.startswith("fix"):
+                try:
+                    val = max(0, min(PWM_MAX, int(cmd[3:])))
+                    current_pwm = val
+                    target_pwm = val
+                    pwm0.duty_u16(val)
+                    _manual_lock = True
+                    boost_active = False
+                    LED.on() if val > 0 else LED.off()
+                    mqtt_log(f"Fix-Modus: PWM={val}, Regelung gesperrt")
+                except:
+                    mqtt_log(f"fix-Fehler: {cmd}")
             elif cmd == "la":
                 mqtt_log("LA: Logic Analyzer startet...")
                 try:
