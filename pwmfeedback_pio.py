@@ -1,4 +1,4 @@
-# pwmfeedback_pio.py – v2.63-push-block – push() statt push(noblock): kein Desync möglich
+# pwmfeedback_pio.py – v2.64-discard-pct – DiscardPct: verworfene Flanken in %
 # Drop-in-Ersatz für pwmfeedback.py — gleiche API, kein IRQ-Overhead
 #
 # Messprinzip: PIO State Machine misst HIGH- und LOW-Zeit cycle-genau.
@@ -74,6 +74,8 @@ _buf_count       = 0           # Anzahl valider Einträge (0.._BUF_SIZE)
 _last_update_us  = 0
 _error_state_start_ms = 0
 _is_in_error_state    = False
+_reads_total          = 0   # Paare aus FIFO gelesen (gesamt)
+_reads_discarded      = 0   # davon verworfen (h=0, l=0 oder zu kurz)
 
 # Dynamische Drain-Anpassung
 FREQ_STABLE_MS   = 1000        # 1s stabile Frequenz vor Drain-Anpassung
@@ -109,7 +111,7 @@ def _adapt_drain(freq):
 
 def _drain_fifo(t=None):
     """FIFO leeren und valide Messungen in Ringpuffer schreiben. Timer-safe."""
-    global _buf_idx, _buf_count, _last_update_us
+    global _buf_idx, _buf_count, _last_update_us, _reads_total, _reads_discarded
     if _sm is None:
         return
     while _sm.rx_fifo() >= 2:
@@ -117,6 +119,7 @@ def _drain_fifo(t=None):
         x_low  = _sm.get()
         h = (0xFFFFFFFF - x_high) * 2
         l = (0xFFFFFFFF - x_low)  * 2
+        _reads_total += 1
         if h > 0 and l > 0 and (h + l) > 100:
             _high_buf[_buf_idx] = h
             _low_buf[_buf_idx]  = l
@@ -124,6 +127,8 @@ def _drain_fifo(t=None):
             if _buf_count < _BUF_SIZE:
                 _buf_count += 1
             _last_update_us = utime.ticks_us()
+        else:
+            _reads_discarded += 1
 
 # ==================== ÖFFENTLICHE API ====================
 def init_feedback_pin():
@@ -190,6 +195,8 @@ def get_pump_feedback(current_pin_value):
         _is_in_error_state    = False
         _error_state_start_ms = 0
 
+    discard_pct = round(_reads_discarded / _reads_total * 100, 1) if _reads_total > 0 else 0.0
+
     return {
         "PIN5":          current_pin_value,
         "PIN5_Flank_us": low_med,
@@ -198,6 +205,7 @@ def get_pump_feedback(current_pin_value):
         "PIN5_Freq_Hz":  freq,
         "PIN5_N":        _buf_count,
         "DrainMs":       _drain_ms,
+        "DiscardPct":    discard_pct,
         "PumpDuty":      round(duty, 2),
         "PumpStatus":    status,
     }
